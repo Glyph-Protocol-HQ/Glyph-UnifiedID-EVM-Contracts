@@ -16,6 +16,12 @@ UnifiedIDRegistry is a smart contract that provides a secure and efficient way t
 - **Reentrancy Protection**: Uses OpenZeppelin's ReentrancyGuard for security
 - **Multi-Network Support**: Deployable to Polygon, Ethereum Sepolia, Base Sepolia, and more
 
+### Detailed Documentation
+
+https://docs.glyph.network/
+
+
+
 ## Deployed Addresses
 
 ### Base Sepolia Testnet
