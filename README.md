@@ -14,7 +14,7 @@ UnifiedIDRegistry is a smart contract that provides a secure and efficient way t
 - **Bidirectional Lookup**: Query UnifiedID by wallet address or wallet by UnifiedID
 - **Format Validation**: Enforces strict format rules for UnifiedIDs (lowercase alphanumeric, 4-16 characters)
 - **Reentrancy Protection**: Uses OpenZeppelin's ReentrancyGuard for security
-- **Multi-Network Support**: Deployable to Polygon, Ethereum Sepolia, Base Sepolia, and more
+- **Multi-Network Support**: Deployable to Polygon, Ethereum Sepolia, Base Sepolia, BNB Chain (coming soon), and more
 
 ### Detailed Documentation
 
@@ -24,8 +24,14 @@ https://docs.glyph.network/
 
 ## Deployed Addresses
 
+### Base Mainnet
+- **UnifiedIDRegistry**: `0x3bcdaa321cd9eeffaad4bd501a69b53fbbbb5655`
+
 ### Base Sepolia Testnet
 - **UnifiedIDRegistry**: `0xbDe85ce0fCfB1b7F25e9570015B574529e70E1DB`
+
+### BNB Chain
+- *Coming soon*
 
 ## Prerequisites
 
