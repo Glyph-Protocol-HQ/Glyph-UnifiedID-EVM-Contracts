@@ -203,6 +203,38 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard, EIP712 {
         _createUnifiedID(unifiedId, primaryWallet);
     }
 
+    /**
+     * @dev Creates a new UnifiedID via registrar with user signature verification
+     * @param unifiedId The UnifiedID string to create
+     * @param primaryWallet The primary wallet address to associate
+     * @param signature The EIP-712 signature from primaryWallet authorizing this registration
+     * @notice Only callable by authorized registrars, requires valid user signature
+     */
+    function createUnifiedIDByRegistrar(
+        string calldata unifiedId,
+        address primaryWallet,
+        bytes calldata signature
+    ) external onlyRegistrar nonReentrant {
+        uint256 nonce = nonces[primaryWallet];
+
+        bytes32 digest = _hashUnifiedIdMessage(
+            primaryWallet,
+            unifiedId,
+            nonce
+        );
+
+        address signer = digest.recover(signature);
+        if (signer != primaryWallet) {
+            revert InvalidSignature();
+        }
+
+        // Consume nonce only on success
+        nonces[primaryWallet] = nonce + 1;
+        emit NonceConsumed(primaryWallet, nonce);
+
+        _createUnifiedID(unifiedId, primaryWallet);
+    }
+
     // ============ Registrar Management Functions ============
 
     /**
