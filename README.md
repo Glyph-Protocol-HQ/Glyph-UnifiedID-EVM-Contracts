@@ -326,8 +326,8 @@ npx hardhat run scripts/manage-registrars.js --network baseSepolia
 This interactive script allows you to:
 - Add new registrars (owner only)
 - Remove existing registrars (owner only)
-- List all current registrars
 - Check if an address is a registrar
+- Get the total count of registrars
 
 ### Programmatic Usage
 
@@ -410,15 +410,11 @@ async function example() {
 - **Description**: Checks if an address is an authorized registrar
 - **Returns**: `true` if the address is a registrar, `false` otherwise
 
-#### `getRegistrars() → address[]`
-- **Access**: Public view
-- **Description**: Gets all registrar addresses
-- **Returns**: Array of all registrar addresses
-
 #### `getRegistrarCount() → uint256`
 - **Access**: Public view
 - **Description**: Gets the total number of active registrars
 - **Returns**: The count of active registrars
+- **Note**: The contract uses a simplified storage design without array enumeration for gas efficiency. Use `isRegistrar()` to check individual addresses.
 
 ### UnifiedID Management Functions
 
@@ -596,8 +592,9 @@ The contract supports three registration methods:
 
 4. **Gas Optimization**:
    - Contract uses optimizer with 200 runs
-   - Efficient storage patterns
+   - Efficient storage patterns (simplified registrar storage without array enumeration)
    - Minimal external calls
+   - Registrar management uses mapping-only storage for reduced gas costs
 
 5. **Reentrancy Protection**:
    - All state-changing functions use `nonReentrant` modifier

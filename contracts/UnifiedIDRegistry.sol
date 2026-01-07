@@ -22,9 +22,6 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard, EIP712 {
     /// @dev Mapping to determine whether an address is an active registrar authorized to create UnifiedIDs
     mapping(address => bool) private _isRegistrar;
 
-    /// @dev Array containing every registrar address ever authorized, enabling enumeration of current registrars
-    address[] private _registrarList;
-
     /// @dev Total count of active registrar addresses for quick external access
     uint256 public registrarCount;
 
@@ -182,7 +179,6 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard, EIP712 {
         }
 
         _isRegistrar[_initialRegistrar] = true;
-        _registrarList.push(_initialRegistrar);
         registrarCount = 1;
 
         emit RegistrarAdded(_initialRegistrar, msg.sender, block.timestamp);
@@ -284,7 +280,6 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard, EIP712 {
         }
 
         _isRegistrar[registrar] = true;
-        _registrarList.push(registrar);
 
         unchecked {
             registrarCount++;
@@ -305,14 +300,6 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard, EIP712 {
 
         _isRegistrar[registrar] = false;
 
-        for (uint256 i = 0; i < _registrarList.length; i++) {
-            if (_registrarList[i] == registrar) {
-                _registrarList[i] = _registrarList[_registrarList.length - 1];
-                _registrarList.pop();
-                break;
-            }
-        }
-
         unchecked {
             registrarCount--;
         }
@@ -327,14 +314,6 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard, EIP712 {
      */
     function isRegistrar(address account) external view returns (bool) {
         return _isRegistrar[account];
-    }
-
-    /**
-     * @dev Gets all registrar addresses
-     * @return Array of all registrar addresses
-     */
-    function getRegistrars() external view returns (address[] memory) {
-        return _registrarList;
     }
 
     /**

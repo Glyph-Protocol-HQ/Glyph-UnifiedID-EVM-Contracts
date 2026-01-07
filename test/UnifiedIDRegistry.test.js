@@ -25,8 +25,7 @@ describe("UnifiedIDRegistry", function () {
       const { registry, initialRegistrar } = await loadFixture(deployFixture);
 
       expect(await registry.isRegistrar(initialRegistrar.address)).to.be.true;
-      const registrars = await registry.getRegistrars();
-      expect(registrars).to.include(initialRegistrar.address);
+      expect(await registry.getRegistrarCount()).to.equal(1);
     });
 
     it("Should set registrarCount to 1 after deployment", async function () {
@@ -827,19 +826,6 @@ describe("UnifiedIDRegistry", function () {
       expect(await registry.isRegistrar(user3.address)).to.be.true;
     });
 
-    it("Should return correct array from getRegistrars", async function () {
-      const { registry, owner, initialRegistrar, user1, user2 } = await loadFixture(deployFixture);
-
-      await registry.connect(owner).addRegistrar(user1.address);
-      await registry.connect(owner).addRegistrar(user2.address);
-
-      const registrars = await registry.getRegistrars();
-      expect(registrars.length).to.equal(3);
-      expect(registrars).to.include(initialRegistrar.address);
-      expect(registrars).to.include(user1.address);
-      expect(registrars).to.include(user2.address);
-    });
-
     it("Should return true for isRegistrar when registrar is added", async function () {
       const { registry, owner, user1 } = await loadFixture(deployFixture);
 
@@ -906,24 +892,6 @@ describe("UnifiedIDRegistry", function () {
       await registry.connect(owner).removeRegistrar(initialRegistrar.address);
 
       expect(await registry.isRegistrar(initialRegistrar.address)).to.be.false;
-    });
-
-    it("Should return updated array from getRegistrars after removal", async function () {
-      const { registry, owner, initialRegistrar, user1, user2 } = await loadFixture(deployFixture);
-
-      await registry.connect(owner).addRegistrar(user1.address);
-      await registry.connect(owner).addRegistrar(user2.address);
-
-      let registrars = await registry.getRegistrars();
-      expect(registrars.length).to.equal(3);
-
-      await registry.connect(owner).removeRegistrar(initialRegistrar.address);
-
-      registrars = await registry.getRegistrars();
-      expect(registrars.length).to.equal(2);
-      expect(registrars).to.not.include(initialRegistrar.address);
-      expect(registrars).to.include(user1.address);
-      expect(registrars).to.include(user2.address);
     });
 
     it("Should allow removing and re-adding same registrar", async function () {
@@ -1129,19 +1097,6 @@ describe("UnifiedIDRegistry", function () {
 
   // ============ SECTION 4: VIEW FUNCTIONS TESTS ============
   describe("View Functions", function () {
-    it("Should return all registrars from getRegistrars", async function () {
-      const { registry, owner, initialRegistrar, user1, user2 } = await loadFixture(deployFixture);
-
-      await registry.connect(owner).addRegistrar(user1.address);
-      await registry.connect(owner).addRegistrar(user2.address);
-
-      const registrars = await registry.getRegistrars();
-      expect(registrars.length).to.equal(3);
-      expect(registrars).to.include(initialRegistrar.address);
-      expect(registrars).to.include(user1.address);
-      expect(registrars).to.include(user2.address);
-    });
-
     it("Should return correct count from getRegistrarCount", async function () {
       const { registry, owner, user1, user2 } = await loadFixture(deployFixture);
 
@@ -1292,22 +1247,19 @@ describe("UnifiedIDRegistry", function () {
       expect(await registry.registrarCount()).to.equal(1);
     });
 
-    it("Should maintain correct registrar array order after removals", async function () {
+    it("Should maintain correct registrar state after removals", async function () {
       const { registry, owner, initialRegistrar, user1, user2, user3 } = await loadFixture(deployFixture);
 
       await registry.connect(owner).addRegistrar(user1.address);
       await registry.connect(owner).addRegistrar(user2.address);
       await registry.connect(owner).addRegistrar(user3.address);
 
+      expect(await registry.getRegistrarCount()).to.equal(4);
+
       // Remove middle registrar (user2)
       await registry.connect(owner).removeRegistrar(user2.address);
 
-      const registrars = await registry.getRegistrars();
-      expect(registrars.length).to.equal(3);
-      expect(registrars).to.include(initialRegistrar.address);
-      expect(registrars).to.include(user1.address);
-      expect(registrars).to.include(user3.address);
-      expect(registrars).to.not.include(user2.address);
+      expect(await registry.getRegistrarCount()).to.equal(3);
 
       // Verify all remaining are still registrars
       expect(await registry.isRegistrar(initialRegistrar.address)).to.be.true;
@@ -1322,10 +1274,8 @@ describe("UnifiedIDRegistry", function () {
       await registry.connect(owner).removeRegistrar(initialRegistrar.address);
 
       expect(await registry.registrarCount()).to.equal(0);
+      expect(await registry.getRegistrarCount()).to.equal(0);
       expect(await registry.isRegistrar(initialRegistrar.address)).to.be.false;
-
-      const registrars = await registry.getRegistrars();
-      expect(registrars.length).to.equal(0);
     });
   });
 
