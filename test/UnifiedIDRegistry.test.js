@@ -127,6 +127,57 @@ describe("UnifiedIDRegistry", function () {
     });
   });
 
+  // ============ SECTION 1.6: NONCE TRACKING TESTS ============
+  describe("Nonce Tracking", function () {
+    it("Should return 0 for nonces mapping on new addresses", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+
+      // New address should have nonce of 0
+      expect(await registry.nonces(user1.address)).to.equal(0);
+      expect(await registry.getNonce(user1.address)).to.equal(0);
+    });
+
+    it("Should return correct nonce value via getNonce()", async function () {
+      const { registry, user1, user2 } = await loadFixture(deployFixture);
+
+      // Initially nonce should be 0
+      expect(await registry.getNonce(user1.address)).to.equal(0);
+      expect(await registry.getNonce(user2.address)).to.equal(0);
+
+      // Direct mapping access should match getNonce()
+      expect(await registry.nonces(user1.address)).to.equal(await registry.getNonce(user1.address));
+      expect(await registry.nonces(user2.address)).to.equal(await registry.getNonce(user2.address));
+    });
+
+    it("Should correctly form UNIFIED_ID_TYPEHASH", async function () {
+      const { registry } = await loadFixture(deployFixture);
+
+      // Get the typehash from the contract
+      const contractTypehash = await registry.getUnifiedIdTypehash();
+
+      // Compute the expected typehash in JavaScript
+      const typeString = "UnifiedIdRegistration(address wallet,string unifiedId,uint256 nonce)";
+      const expectedTypehash = ethers.utils.keccak256(ethers.utils.toUtf8Bytes(typeString));
+
+      // Compare
+      expect(contractTypehash).to.equal(expectedTypehash);
+      expect(contractTypehash).to.not.equal(ethers.constants.HashZero);
+    });
+
+    it("Should maintain nonce consistency across multiple queries", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+
+      const nonce1 = await registry.getNonce(user1.address);
+      const nonce2 = await registry.nonces(user1.address);
+      const nonce3 = await registry.getNonce(user1.address);
+
+      // All should be the same
+      expect(nonce1).to.equal(nonce2);
+      expect(nonce2).to.equal(nonce3);
+      expect(nonce1).to.equal(0);
+    });
+  });
+
   // ============ SECTION 2: REGISTRAR MANAGEMENT TESTS ============
   describe("Registrar Management - Adding Registrars", function () {
     it("Should allow owner to add registrar", async function () {

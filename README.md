@@ -13,7 +13,7 @@ UnifiedIDRegistry is a smart contract that provides a secure and efficient way t
 - **Registrar Management**: Contract owner can add or remove registrars dynamically
 - **Bidirectional Lookup**: Query UnifiedID by wallet address or wallet by UnifiedID
 - **Format Validation**: Enforces strict format rules for UnifiedIDs (lowercase alphanumeric, 4-16 characters)
-- **EIP-712 Support**: Built-in support for EIP-712 typed structured data hashing and signing
+- **EIP-712 Support**: Built-in support for EIP-712 typed structured data hashing and signing with nonce tracking for replay protection
 - **Reentrancy Protection**: Uses OpenZeppelin's ReentrancyGuard for security
 - **Multi-Network Support**: Deployable to Polygon, Ethereum Sepolia, Base Sepolia, BNB Chain (coming soon), and more
 
@@ -327,16 +327,31 @@ async function example() {
   - `wallet`: The wallet address to query
 - **Returns**: The UnifiedID string associated with the wallet, or empty string if wallet has no ID
 
+#### `getNonce(address wallet) → uint256`
+- **Access**: Public view
+- **Description**: Gets the current nonce for a wallet address
+- **Parameters**: 
+  - `wallet`: The wallet address to query
+- **Returns**: The current nonce value (starts at 0 for new addresses)
+- **Use Case**: Used for signature replay protection in EIP-712 based registration flows
+
 #### `domainSeparator() → bytes32`
 - **Access**: Public view
 - **Description**: Returns the EIP-712 domain separator for use in off-chain signature verification
 - **Returns**: The domain separator bytes32 value
 - **Use Case**: Enables off-chain applications to verify typed structured data signatures according to EIP-712 standard
 
+#### `getUnifiedIdTypehash() → bytes32`
+- **Access**: Public view
+- **Description**: Returns the EIP-712 typehash for UnifiedID registration
+- **Returns**: The typehash bytes32 value for "UnifiedIdRegistration(address wallet,string unifiedId,uint256 nonce)"
+- **Use Case**: Enables off-chain applications to construct typed structured data messages for signature verification
+
 ### Public State Variables
 
 - `registrarCount` (uint256): Total count of active registrars
 - `totalIDs` (uint256): Total number of UnifiedIDs created
+- `nonces` (mapping(address => uint256)): Mapping from wallet address to current nonce for signature replay protection
 
 ### Events
 

@@ -31,6 +31,9 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard, EIP712 {
     /// @dev Total number of UnifiedIDs created
     uint256 public totalIDs;
 
+    /// @dev Mapping from wallet address to current nonce for signature replay protection
+    mapping(address => uint256) public nonces;
+
     // ============ Structs ============
 
     /**
@@ -134,6 +137,10 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard, EIP712 {
 
     /// @dev Maximum length for a UnifiedID (16 characters)
     uint256 private constant MAX_UNIFIED_ID_LENGTH = 16;  // 
+
+    /// @dev EIP-712 typehash for UnifiedID registration
+    bytes32 private constant UNIFIED_ID_TYPEHASH =
+        keccak256("UnifiedIdRegistration(address wallet,string unifiedId,uint256 nonce)");
 
     // ============ Modifiers ============
 
@@ -346,12 +353,30 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard, EIP712 {
     }
 
     /**
+     * @dev Gets the current nonce for a wallet address
+     * @param wallet The wallet address to query
+     * @return The current nonce value
+     */
+    function getNonce(address wallet) external view returns (uint256) {
+        return nonces[wallet];
+    }
+
+    /**
      * @dev Returns the EIP-712 domain separator
      * @return The domain separator bytes32 value
      * @notice This function exposes the domain separator for use in off-chain signature verification
      */
     function domainSeparator() external view returns (bytes32) {
         return _domainSeparatorV4();
+    }
+
+    /**
+     * @dev Returns the EIP-712 typehash for UnifiedID registration
+     * @return The typehash bytes32 value
+     * @notice This function exposes the typehash for use in off-chain signature verification
+     */
+    function getUnifiedIdTypehash() external pure returns (bytes32) {
+        return UNIFIED_ID_TYPEHASH;
     }
 
     // ============ Internal Functions ============
