@@ -4,6 +4,29 @@ const { loadFixture } = require("@nomicfoundation/hardhat-toolbox/network-helper
 const { anyValue } = require("@nomicfoundation/hardhat-chai-matchers/withArgs");
 const { deployFixture } = require("./fixtures/deploy");
 
+// Global helper function for signing registration data
+async function signRegistration(signer, contract, wallet, unifiedId, nonce) {
+  const network = await ethers.provider.getNetwork();
+  const domain = {
+    name: "UnifiedIDRegistry",
+    version: "1",
+    chainId: network.chainId,
+    verifyingContract: contract.address
+  };
+  
+  const types = {
+    UnifiedIdRegistration: [
+      { name: "wallet", type: "address" },
+      { name: "unifiedId", type: "string" },
+      { name: "nonce", type: "uint256" }
+    ]
+  };
+  
+  const value = { wallet, unifiedId, nonce };
+  
+  return await signer._signTypedData(domain, types, value);
+}
+
 describe("UnifiedIDRegistry", function () {
   // ============ SECTION 1: DEPLOYMENT TESTS ============
   describe("Deployment", function () {
@@ -25,8 +48,7 @@ describe("UnifiedIDRegistry", function () {
       const { registry, initialRegistrar } = await loadFixture(deployFixture);
 
       expect(await registry.isRegistrar(initialRegistrar.address)).to.be.true;
-      const registrars = await registry.getRegistrars();
-      expect(registrars).to.include(initialRegistrar.address);
+      expect(await registry.getRegistrarCount()).to.equal(1);
     });
 
     it("Should set registrarCount to 1 after deployment", async function () {
@@ -74,6 +96,692 @@ describe("UnifiedIDRegistry", function () {
       const { registry } = await loadFixture(deployFixture);
 
       expect(await registry.totalIDs()).to.equal(0);
+    });
+  });
+
+  // ============ SECTION 1.5: EIP-712 TESTS ============
+  describe("EIP-712 Support", function () {
+    it("Should deploy contract successfully with EIP712 initialized", async function () {
+      const { registry } = await loadFixture(deployFixture);
+
+      // Contract should deploy without errors
+      expect(registry.address).to.be.properAddress;
+      
+      // Verify EIP712 is initialized by checking domain separator is accessible
+      const domainSeparator = await registry.domainSeparator();
+      expect(domainSeparator).to.not.equal(ethers.constants.HashZero);
+    });
+
+    it("Should return non-zero domain separator", async function () {
+      const { registry } = await loadFixture(deployFixture);
+
+      const domainSeparator = await registry.domainSeparator();
+      
+      // Domain separator should be a non-zero bytes32 value
+      expect(domainSeparator).to.not.equal(ethers.constants.HashZero);
+      expect(domainSeparator.length).to.equal(66); // 0x + 64 hex characters
+    });
+
+    it("Should maintain consistent domain separator across calls", async function () {
+      const { registry } = await loadFixture(deployFixture);
+
+      const domainSeparator1 = await registry.domainSeparator();
+      const domainSeparator2 = await registry.domainSeparator();
+      
+      // Domain separator should be consistent
+      expect(domainSeparator1).to.equal(domainSeparator2);
+    });
+
+    it("Should allow signature-based registration to work after EIP712 integration", async function () {
+      const { registry, initialRegistrar, user1 } = await loadFixture(deployFixture);
+
+      // Verify EIP712 is initialized
+      const domainSeparator = await registry.domainSeparator();
+      expect(domainSeparator).to.not.equal(ethers.constants.HashZero);
+
+      // Verify existing functionality still works with signature-based registration
+      const unifiedId = "testuser123";
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+      
+      await registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId, wallet, signature);
+
+      expect(await registry.unifiedIdExists(unifiedId)).to.be.true;
+      expect(await registry.getPrimaryWallet(unifiedId)).to.equal(wallet);
+      expect(await registry.totalIDs()).to.equal(1);
+    });
+  });
+
+  // ============ SECTION 1.6: NONCE TRACKING TESTS ============
+  describe("Nonce Tracking", function () {
+    it("Should return 0 for nonces mapping on new addresses", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+
+      // New address should have nonce of 0
+      expect(await registry.nonces(user1.address)).to.equal(0);
+      expect(await registry.getNonce(user1.address)).to.equal(0);
+    });
+
+    it("Should return correct nonce value via getNonce()", async function () {
+      const { registry, user1, user2 } = await loadFixture(deployFixture);
+
+      // Initially nonce should be 0
+      expect(await registry.getNonce(user1.address)).to.equal(0);
+      expect(await registry.getNonce(user2.address)).to.equal(0);
+
+      // Direct mapping access should match getNonce()
+      expect(await registry.nonces(user1.address)).to.equal(await registry.getNonce(user1.address));
+      expect(await registry.nonces(user2.address)).to.equal(await registry.getNonce(user2.address));
+    });
+
+    it("Should correctly form UNIFIED_ID_TYPEHASH", async function () {
+      const { registry } = await loadFixture(deployFixture);
+
+      // Get the typehash from the contract
+      const contractTypehash = await registry.getUnifiedIdTypehash();
+
+      // Compute the expected typehash in JavaScript
+      const typeString = "UnifiedIdRegistration(address wallet,string unifiedId,uint256 nonce)";
+      const expectedTypehash = ethers.utils.keccak256(ethers.utils.toUtf8Bytes(typeString));
+
+      // Compare
+      expect(contractTypehash).to.equal(expectedTypehash);
+      expect(contractTypehash).to.not.equal(ethers.constants.HashZero);
+    });
+
+    it("Should maintain nonce consistency across multiple queries", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+
+      const nonce1 = await registry.getNonce(user1.address);
+      const nonce2 = await registry.nonces(user1.address);
+      const nonce3 = await registry.getNonce(user1.address);
+
+      // All should be the same
+      expect(nonce1).to.equal(nonce2);
+      expect(nonce2).to.equal(nonce3);
+      expect(nonce1).to.equal(0);
+    });
+  });
+
+  // ============ SECTION 1.7: SIGNATURE VERIFICATION ERRORS AND EVENTS TESTS ============
+  describe("Signature Verification Errors and Events", function () {
+    it("Should have correct InvalidSignature error selector", async function () {
+      const UnifiedIDRegistry = await ethers.getContractFactory("UnifiedIDRegistry");
+      
+      // Get error selector from contract interface using getSighash
+      const errorFragment = UnifiedIDRegistry.interface.getError("InvalidSignature");
+      const errorSelector = UnifiedIDRegistry.interface.getSighash(errorFragment);
+      
+      // Compute expected selector: keccak256("InvalidSignature()") first 4 bytes
+      const expectedSelector = ethers.utils.id("InvalidSignature()").slice(0, 10); // 0x + 8 hex chars
+      
+      expect(errorSelector).to.equal(expectedSelector);
+      expect(errorSelector).to.not.equal("0x00000000");
+    });
+
+    it("Should have correct SignatureExpired error selector", async function () {
+      const UnifiedIDRegistry = await ethers.getContractFactory("UnifiedIDRegistry");
+      
+      // Get error selector from contract interface using getSighash
+      const errorFragment = UnifiedIDRegistry.interface.getError("SignatureExpired");
+      const errorSelector = UnifiedIDRegistry.interface.getSighash(errorFragment);
+      
+      // Compute expected selector: keccak256("SignatureExpired()") first 4 bytes
+      const expectedSelector = ethers.utils.id("SignatureExpired()").slice(0, 10); // 0x + 8 hex chars
+      
+      expect(errorSelector).to.equal(expectedSelector);
+      expect(errorSelector).to.not.equal("0x00000000");
+    });
+
+    it("Should have correct NonceConsumed event signature", async function () {
+      const UnifiedIDRegistry = await ethers.getContractFactory("UnifiedIDRegistry");
+      
+      // Get event from contract interface using getEventTopic
+      const eventFragment = UnifiedIDRegistry.interface.getEvent("NonceConsumed");
+      const eventTopic = UnifiedIDRegistry.interface.getEventTopic(eventFragment);
+      
+      // Compute expected topic hash: keccak256("NonceConsumed(address,uint256)")
+      const expectedTopic = ethers.utils.id("NonceConsumed(address,uint256)");
+      
+      expect(eventTopic).to.equal(expectedTopic);
+      expect(eventTopic).to.not.equal(ethers.constants.HashZero);
+    });
+
+    it("Should have NonceConsumed event with correct indexed parameters", async function () {
+      const UnifiedIDRegistry = await ethers.getContractFactory("UnifiedIDRegistry");
+      
+      // Get event from contract interface
+      const eventFragment = UnifiedIDRegistry.interface.getEvent("NonceConsumed");
+      
+      // Verify event has correct parameters
+      expect(eventFragment.inputs.length).to.equal(2);
+      expect(eventFragment.inputs[0].name).to.equal("wallet");
+      expect(eventFragment.inputs[0].type).to.equal("address");
+      expect(eventFragment.inputs[0].indexed).to.be.true;
+      expect(eventFragment.inputs[1].name).to.equal("nonce");
+      expect(eventFragment.inputs[1].type).to.equal("uint256");
+      expect(eventFragment.inputs[1].indexed).to.be.false;
+    });
+  });
+
+  // ============ SECTION 1.8: EIP-712 HASH HELPER TESTS ============
+  describe("EIP-712 Hash Helper Functions", function () {
+    // Helper function for signing registration data
+    async function signRegistration(signer, contract, wallet, unifiedId, nonce) {
+      const network = await ethers.provider.getNetwork();
+      const domain = {
+        name: "UnifiedIDRegistry",
+        version: "1",
+        chainId: network.chainId,
+        verifyingContract: contract.address
+      };
+      
+      const types = {
+        UnifiedIdRegistration: [
+          { name: "wallet", type: "address" },
+          { name: "unifiedId", type: "string" },
+          { name: "nonce", type: "uint256" }
+        ]
+      };
+      
+      const value = { wallet, unifiedId, nonce };
+      
+      return await signer._signTypedData(domain, types, value);
+    }
+
+    it("Should return consistent hash for same inputs", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+
+      const wallet = user1.address;
+      const unifiedId = "testuser123";
+      const nonce = 0;
+
+      const hash1 = await registry.getRegistrationHash(wallet, unifiedId, nonce);
+      const hash2 = await registry.getRegistrationHash(wallet, unifiedId, nonce);
+      const hash3 = await registry.getRegistrationHash(wallet, unifiedId, nonce);
+
+      expect(hash1).to.equal(hash2);
+      expect(hash2).to.equal(hash3);
+      expect(hash1).to.not.equal(ethers.constants.HashZero);
+    });
+
+    it("Should return different hash when wallet changes", async function () {
+      const { registry, user1, user2 } = await loadFixture(deployFixture);
+
+      const unifiedId = "testuser123";
+      const nonce = 0;
+
+      const hash1 = await registry.getRegistrationHash(user1.address, unifiedId, nonce);
+      const hash2 = await registry.getRegistrationHash(user2.address, unifiedId, nonce);
+
+      expect(hash1).to.not.equal(hash2);
+      expect(hash1).to.not.equal(ethers.constants.HashZero);
+      expect(hash2).to.not.equal(ethers.constants.HashZero);
+    });
+
+    it("Should return different hash when unifiedId changes", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+
+      const wallet = user1.address;
+      const nonce = 0;
+
+      const hash1 = await registry.getRegistrationHash(wallet, "testuser123", nonce);
+      const hash2 = await registry.getRegistrationHash(wallet, "testuser456", nonce);
+      const hash3 = await registry.getRegistrationHash(wallet, "differentid", nonce);
+
+      expect(hash1).to.not.equal(hash2);
+      expect(hash2).to.not.equal(hash3);
+      expect(hash1).to.not.equal(hash3);
+      expect(hash1).to.not.equal(ethers.constants.HashZero);
+    });
+
+    it("Should return different hash when nonce changes", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+
+      const wallet = user1.address;
+      const unifiedId = "testuser123";
+
+      const hash1 = await registry.getRegistrationHash(wallet, unifiedId, 0);
+      const hash2 = await registry.getRegistrationHash(wallet, unifiedId, 1);
+      const hash3 = await registry.getRegistrationHash(wallet, unifiedId, 2);
+
+      expect(hash1).to.not.equal(hash2);
+      expect(hash2).to.not.equal(hash3);
+      expect(hash1).to.not.equal(hash3);
+      expect(hash1).to.not.equal(ethers.constants.HashZero);
+    });
+
+    it("Should match hash computed by signTypedData and verify recovered address", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+
+      const wallet = user1.address;
+      const unifiedId = "testuser123";
+      const nonce = 0;
+
+      // Get hash from contract (this is the final hash that should be signed)
+      const contractHash = await registry.getRegistrationHash(wallet, unifiedId, nonce);
+
+      // Sign using signTypedData - ethers.js will compute the same hash internally
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+
+      // Parse signature
+      const sig = ethers.utils.splitSignature(signature);
+      
+      // The contract hash is already the final EIP-712 hash (includes prefix)
+      // So we can recover directly from it
+      const recoveredAddress = ethers.utils.recoverAddress(
+        contractHash,
+        { r: sig.r, s: sig.s, v: sig.v }
+      );
+
+      expect(recoveredAddress).to.equal(wallet);
+      
+      // Also verify that the hash matches what ethers computes
+      const network = await ethers.provider.getNetwork();
+      const domain = {
+        name: "UnifiedIDRegistry",
+        version: "1",
+        chainId: network.chainId,
+        verifyingContract: registry.address
+      };
+      
+      const types = {
+        UnifiedIdRegistration: [
+          { name: "wallet", type: "address" },
+          { name: "unifiedId", type: "string" },
+          { name: "nonce", type: "uint256" }
+        ]
+      };
+      
+      const value = { wallet, unifiedId, nonce };
+      
+      // Compute hash using ethers (for verification)
+      const ethersHash = ethers.utils._TypedDataEncoder.hash(domain, types, value);
+      expect(contractHash).to.equal(ethersHash);
+    });
+
+    it("Should produce hash that can be verified with ECDSA.recover", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+
+      const wallet = user1.address;
+      const unifiedId = "testuser123";
+      const nonce = 0;
+
+      // Get hash from contract
+      const contractHash = await registry.getRegistrationHash(wallet, unifiedId, nonce);
+
+      // Sign the hash directly (not EIP-712 format)
+      const messageHash = ethers.utils.arrayify(contractHash);
+      const signature = await user1.signMessage(messageHash);
+
+      // Recover address
+      const recoveredAddress = ethers.utils.verifyMessage(messageHash, signature);
+
+      expect(recoveredAddress).to.equal(wallet);
+    });
+
+    it("Should produce different hashes for different contract addresses", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+      
+      // Deploy a second instance
+      const [owner, initialRegistrar] = await ethers.getSigners();
+      const UnifiedIDRegistry = await ethers.getContractFactory("UnifiedIDRegistry");
+      const registry2 = await UnifiedIDRegistry.deploy(initialRegistrar.address);
+      await registry2.deployed();
+
+      const wallet = user1.address;
+      const unifiedId = "testuser123";
+      const nonce = 0;
+
+      const hash1 = await registry.getRegistrationHash(wallet, unifiedId, nonce);
+      const hash2 = await registry2.getRegistrationHash(wallet, unifiedId, nonce);
+
+      // Hashes should be different because domain separator includes contract address
+      expect(hash1).to.not.equal(hash2);
+    });
+  });
+
+  // ============ SECTION 1.9: CREATE UNIFIEDID BY REGISTRAR WITH SIGNATURE ============
+  describe("createUnifiedIDByRegistrar", function () {
+    // Helper function for signing registration data
+    async function signRegistration(signer, contract, wallet, unifiedId, nonce) {
+      const network = await ethers.provider.getNetwork();
+      const domain = {
+        name: "UnifiedIDRegistry",
+        version: "1",
+        chainId: network.chainId,
+        verifyingContract: contract.address
+      };
+      
+      const types = {
+        UnifiedIdRegistration: [
+          { name: "wallet", type: "address" },
+          { name: "unifiedId", type: "string" },
+          { name: "nonce", type: "uint256" }
+        ]
+      };
+      
+      const value = { wallet, unifiedId, nonce };
+      
+      return await signer._signTypedData(domain, types, value);
+    }
+
+    it("Should successfully register with valid signature", async function () {
+      const { registry, initialRegistrar, user1 } = await loadFixture(deployFixture);
+
+      const unifiedId = "testuser123";
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+      expect(nonce).to.equal(0);
+
+      // Sign the registration request
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+
+      // Registrar creates UnifiedID with signature
+      await expect(
+        registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId, wallet, signature)
+      )
+        .to.emit(registry, "UnifiedIDCreated")
+        .withArgs(unifiedId, wallet, anyValue)
+        .and.to.emit(registry, "NonceConsumed")
+        .withArgs(wallet, nonce);
+
+      // Verify UnifiedID was created
+      expect(await registry.unifiedIdExists(unifiedId)).to.be.true;
+      expect(await registry.getPrimaryWallet(unifiedId)).to.equal(wallet);
+    });
+
+    it("Should revert with InvalidSignature when signature is from wrong wallet", async function () {
+      const { registry, initialRegistrar, user1, user2 } = await loadFixture(deployFixture);
+
+      const unifiedId = "testuser123";
+      const walletToRegister = user1.address; // This is the wallet that should sign
+      const wrongWallet = user2.address; // But we'll use user2's signature
+      const nonce = await registry.getNonce(walletToRegister);
+
+      // User2 signs for user1's wallet (wrong signer)
+      const signature = await signRegistration(user2, registry, walletToRegister, unifiedId, nonce);
+
+      // Should revert because signature doesn't match wallet
+      await expect(
+        registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId, walletToRegister, signature)
+      ).to.be.revertedWithCustomError(registry, "InvalidSignature");
+    });
+
+    it("Should revert with InvalidSignature when signature is malformed", async function () {
+      const { registry, initialRegistrar, user1 } = await loadFixture(deployFixture);
+
+      const unifiedId = "testuser123";
+      const wallet = user1.address;
+      const garbageSignature = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+
+      // Should revert with InvalidSignature (or potentially revert due to invalid signature format)
+      await expect(
+        registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId, wallet, garbageSignature)
+      ).to.be.reverted;
+    });
+
+    it("Should revert when called by non-registrar", async function () {
+      const { registry, user1, user2 } = await loadFixture(deployFixture);
+
+      const unifiedId = "testuser123";
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+
+      // User1 signs
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+
+      // User2 (not a registrar) tries to call
+      await expect(
+        registry.connect(user2).createUnifiedIDByRegistrar(unifiedId, wallet, signature)
+      ).to.be.revertedWithCustomError(registry, "OnlyRegistrar");
+    });
+
+    it("Should increment nonce after successful registration", async function () {
+      const { registry, initialRegistrar, user1 } = await loadFixture(deployFixture);
+
+      const unifiedId = "testuser123";
+      const wallet = user1.address;
+
+      // Check initial nonce
+      expect(await registry.getNonce(wallet)).to.equal(0);
+
+      // Sign and register
+      const nonce = await registry.getNonce(wallet);
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+
+      await registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId, wallet, signature);
+
+      // Nonce should be incremented
+      expect(await registry.getNonce(wallet)).to.equal(1);
+    });
+
+    it("Should emit NonceConsumed event with correct values", async function () {
+      const { registry, initialRegistrar, user1 } = await loadFixture(deployFixture);
+
+      const unifiedId = "testuser123";
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+
+      await expect(
+        registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId, wallet, signature)
+      )
+        .to.emit(registry, "NonceConsumed")
+        .withArgs(wallet, nonce);
+    });
+
+    it("Should prevent signature replay - same signature cannot be reused", async function () {
+      const { registry, initialRegistrar, user1 } = await loadFixture(deployFixture);
+
+      const unifiedId = "testuser123";
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+
+      // Sign for nonce 0
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+
+      // First registration succeeds
+      await registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId, wallet, signature);
+
+      // Try to use the same signature again (should fail because nonce is now 1)
+      await expect(
+        registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId, wallet, signature)
+      ).to.be.revertedWithCustomError(registry, "InvalidSignature");
+    });
+
+    it("Should not increment nonce on failed registration", async function () {
+      const { registry, initialRegistrar, user1 } = await loadFixture(deployFixture);
+
+      const invalidUnifiedId = "ab"; // Too short
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+
+      // Sign with invalid UnifiedID
+      const signature = await signRegistration(user1, registry, wallet, invalidUnifiedId, nonce);
+
+      // Should revert due to invalid format
+      await expect(
+        registry.connect(initialRegistrar).createUnifiedIDByRegistrar(invalidUnifiedId, wallet, signature)
+      ).to.be.revertedWithCustomError(registry, "UnifiedIdTooShort");
+
+      // Nonce should still be 0 (not incremented)
+      expect(await registry.getNonce(wallet)).to.equal(0);
+    });
+  });
+
+  // ============ SECTION 1.10: CREATE UNIFIEDID SELF ============
+  describe("createUnifiedIDSelf", function () {
+    // Helper function for signing registration data (reuse from previous section)
+    async function signRegistration(signer, contract, wallet, unifiedId, nonce) {
+      const network = await ethers.provider.getNetwork();
+      const domain = {
+        name: "UnifiedIDRegistry",
+        version: "1",
+        chainId: network.chainId,
+        verifyingContract: contract.address
+      };
+      
+      const types = {
+        UnifiedIdRegistration: [
+          { name: "wallet", type: "address" },
+          { name: "unifiedId", type: "string" },
+          { name: "nonce", type: "uint256" }
+        ]
+      };
+      
+      const value = { wallet, unifiedId, nonce };
+      
+      return await signer._signTypedData(domain, types, value);
+    }
+
+    it("Should successfully register with valid signature", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+
+      const unifiedId = "testuser123";
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+      expect(nonce).to.equal(0);
+
+      // Sign the registration request
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+
+      // User creates UnifiedID themselves with signature
+      await expect(
+        registry.connect(user1).createUnifiedIDSelf(unifiedId, signature)
+      )
+        .to.emit(registry, "UnifiedIDCreated")
+        .withArgs(unifiedId, wallet, anyValue)
+        .and.to.emit(registry, "NonceConsumed")
+        .withArgs(wallet, nonce);
+
+      // Verify UnifiedID was created
+      expect(await registry.unifiedIdExists(unifiedId)).to.be.true;
+      expect(await registry.getPrimaryWallet(unifiedId)).to.equal(wallet);
+    });
+
+    it("Should revert with InvalidSignature when signature is from different wallet", async function () {
+      const { registry, user1, user2 } = await loadFixture(deployFixture);
+
+      const unifiedId = "testuser123";
+      const wallet1 = user1.address;
+      const wallet2 = user2.address;
+      const nonce = await registry.getNonce(wallet1);
+
+      // User1 signs for themselves
+      const signature = await signRegistration(user1, registry, wallet1, unifiedId, nonce);
+
+      // User2 tries to use user1's signature (msg.sender = user2, but sig is from user1)
+      await expect(
+        registry.connect(user2).createUnifiedIDSelf(unifiedId, signature)
+      ).to.be.revertedWithCustomError(registry, "InvalidSignature");
+    });
+
+    it("Should revert with InvalidSignature when signature is malformed", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+
+      const unifiedId = "testuser123";
+      const garbageSignature = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+
+      // Should revert with InvalidSignature (or potentially revert due to invalid signature format)
+      await expect(
+        registry.connect(user1).createUnifiedIDSelf(unifiedId, garbageSignature)
+      ).to.be.reverted;
+    });
+
+    it("Should allow any address to call (no registrar restriction)", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+
+      const unifiedId = "testuser123";
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+
+      // User1 signs
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+
+      // User1 (not a registrar) calls directly - should succeed
+      await registry.connect(user1).createUnifiedIDSelf(unifiedId, signature);
+
+      // Verify UnifiedID was created
+      expect(await registry.unifiedIdExists(unifiedId)).to.be.true;
+      expect(await registry.getPrimaryWallet(unifiedId)).to.equal(wallet);
+    });
+
+    it("Should increment nonce after successful registration", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+
+      const unifiedId = "testuser123";
+      const wallet = user1.address;
+
+      // Check initial nonce
+      expect(await registry.getNonce(wallet)).to.equal(0);
+
+      // Sign and register
+      const nonce = await registry.getNonce(wallet);
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+
+      await registry.connect(user1).createUnifiedIDSelf(unifiedId, signature);
+
+      // Nonce should be incremented
+      expect(await registry.getNonce(wallet)).to.equal(1);
+    });
+
+    it("Should emit NonceConsumed event with correct values", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+
+      const unifiedId = "testuser123";
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+
+      await expect(
+        registry.connect(user1).createUnifiedIDSelf(unifiedId, signature)
+      )
+        .to.emit(registry, "NonceConsumed")
+        .withArgs(wallet, nonce);
+    });
+
+    it("Should prevent signature replay - same signature cannot be reused", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+
+      const unifiedId = "testuser123";
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+
+      // Sign for nonce 0
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+
+      // First registration succeeds
+      await registry.connect(user1).createUnifiedIDSelf(unifiedId, signature);
+
+      // Try to use the same signature again (should fail because nonce is now 1)
+      await expect(
+        registry.connect(user1).createUnifiedIDSelf(unifiedId, signature)
+      ).to.be.revertedWithCustomError(registry, "InvalidSignature");
+    });
+
+    it("Should prevent user from registering if wallet already has UnifiedID", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+
+      const unifiedId1 = "testid1";
+      const unifiedId2 = "testid2";
+      const wallet = user1.address;
+
+      // Register first UnifiedID
+      const nonce1 = await registry.getNonce(wallet);
+      const signature1 = await signRegistration(user1, registry, wallet, unifiedId1, nonce1);
+      await registry.connect(user1).createUnifiedIDSelf(unifiedId1, signature1);
+
+      // Try to register second UnifiedID (should fail)
+      const nonce2 = await registry.getNonce(wallet);
+      const signature2 = await signRegistration(user1, registry, wallet, unifiedId2, nonce2);
+      
+      await expect(
+        registry.connect(user1).createUnifiedIDSelf(unifiedId2, signature2)
+      ).to.be.revertedWithCustomError(registry, "WalletAlreadyHasId");
     });
   });
 
@@ -145,19 +853,6 @@ describe("UnifiedIDRegistry", function () {
       expect(await registry.isRegistrar(user3.address)).to.be.true;
     });
 
-    it("Should return correct array from getRegistrars", async function () {
-      const { registry, owner, initialRegistrar, user1, user2 } = await loadFixture(deployFixture);
-
-      await registry.connect(owner).addRegistrar(user1.address);
-      await registry.connect(owner).addRegistrar(user2.address);
-
-      const registrars = await registry.getRegistrars();
-      expect(registrars.length).to.equal(3);
-      expect(registrars).to.include(initialRegistrar.address);
-      expect(registrars).to.include(user1.address);
-      expect(registrars).to.include(user2.address);
-    });
-
     it("Should return true for isRegistrar when registrar is added", async function () {
       const { registry, owner, user1 } = await loadFixture(deployFixture);
 
@@ -226,24 +921,6 @@ describe("UnifiedIDRegistry", function () {
       expect(await registry.isRegistrar(initialRegistrar.address)).to.be.false;
     });
 
-    it("Should return updated array from getRegistrars after removal", async function () {
-      const { registry, owner, initialRegistrar, user1, user2 } = await loadFixture(deployFixture);
-
-      await registry.connect(owner).addRegistrar(user1.address);
-      await registry.connect(owner).addRegistrar(user2.address);
-
-      let registrars = await registry.getRegistrars();
-      expect(registrars.length).to.equal(3);
-
-      await registry.connect(owner).removeRegistrar(initialRegistrar.address);
-
-      registrars = await registry.getRegistrars();
-      expect(registrars.length).to.equal(2);
-      expect(registrars).to.not.include(initialRegistrar.address);
-      expect(registrars).to.include(user1.address);
-      expect(registrars).to.include(user2.address);
-    });
-
     it("Should allow removing and re-adding same registrar", async function () {
       const { registry, owner, initialRegistrar } = await loadFixture(deployFixture);
 
@@ -279,10 +956,18 @@ describe("UnifiedIDRegistry", function () {
       await registry.connect(owner).addRegistrar(user1.address);
       await registry.connect(owner).addRegistrar(user2.address);
 
-      // Create IDs with different registrars
-      await registry.connect(initialRegistrar).createUnifiedID("id01", user1.address);
-      await registry.connect(user1).createUnifiedID("id02", user2.address);
-      await registry.connect(user2).createUnifiedID("id03", user3.address);
+      // Create IDs with different registrars (users sign for themselves)
+      const nonce1 = await registry.getNonce(user1.address);
+      const signature1 = await signRegistration(user1, registry, user1.address, "id01", nonce1);
+      await registry.connect(initialRegistrar).createUnifiedIDByRegistrar("id01", user1.address, signature1);
+
+      const nonce2 = await registry.getNonce(user2.address);
+      const signature2 = await signRegistration(user2, registry, user2.address, "id02", nonce2);
+      await registry.connect(user1).createUnifiedIDByRegistrar("id02", user2.address, signature2);
+
+      const nonce3 = await registry.getNonce(user3.address);
+      const signature3 = await signRegistration(user3, registry, user3.address, "id03", nonce3);
+      await registry.connect(user2).createUnifiedIDByRegistrar("id03", user3.address, signature3);
 
       expect(await registry.unifiedIdExists("id01")).to.be.true;
       expect(await registry.unifiedIdExists("id02")).to.be.true;
@@ -308,14 +993,30 @@ describe("UnifiedIDRegistry", function () {
 
   // ============ SECTION 3: UNIFIEDID CREATION TESTS (with registrars) ============
   describe("UnifiedID Creation - With Registrars", function () {
-    it("Should allow registrar to create UnifiedID", async function () {
+    it("Should verify legacy createUnifiedID function no longer exists", async function () {
+      const { registry } = await loadFixture(deployFixture);
+      
+      // Verify createUnifiedID function is not available
+      const contractInterface = registry.interface;
+      const functionNames = Object.keys(contractInterface.functions);
+      
+      expect(functionNames).to.not.include("createUnifiedID(string,address)");
+      expect(functionNames).to.include("createUnifiedIDByRegistrar(string,address,bytes)");
+      expect(functionNames).to.include("createUnifiedIDSelf(string,bytes)");
+    });
+
+    it("Should allow registrar to create UnifiedID with signature", async function () {
       const { registry, initialRegistrar, user1 } = await loadFixture(deployFixture);
 
       const unifiedId = "testuser123";
-      await registry.connect(initialRegistrar).createUnifiedID(unifiedId, user1.address);
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+      
+      await registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId, wallet, signature);
 
       expect(await registry.unifiedIdExists(unifiedId)).to.be.true;
-      expect(await registry.getPrimaryWallet(unifiedId)).to.equal(user1.address);
+      expect(await registry.getPrimaryWallet(unifiedId)).to.equal(wallet);
     });
 
     it("Should allow multiple registrars to create different UnifiedIDs", async function () {
@@ -323,8 +1024,15 @@ describe("UnifiedIDRegistry", function () {
 
       await registry.connect(owner).addRegistrar(user1.address);
 
-      await registry.connect(initialRegistrar).createUnifiedID("id01", user2.address);
-      await registry.connect(user1).createUnifiedID("id02", user3.address);
+      // User2 signs for id01
+      const nonce1 = await registry.getNonce(user2.address);
+      const signature1 = await signRegistration(user2, registry, user2.address, "id01", nonce1);
+      await registry.connect(initialRegistrar).createUnifiedIDByRegistrar("id01", user2.address, signature1);
+
+      // User3 signs for id02
+      const nonce2 = await registry.getNonce(user3.address);
+      const signature2 = await signRegistration(user3, registry, user3.address, "id02", nonce2);
+      await registry.connect(user1).createUnifiedIDByRegistrar("id02", user3.address, signature2);
 
       expect(await registry.unifiedIdExists("id01")).to.be.true;
       expect(await registry.unifiedIdExists("id02")).to.be.true;
@@ -336,8 +1044,12 @@ describe("UnifiedIDRegistry", function () {
       const { registry, user1, user2 } = await loadFixture(deployFixture);
 
       const unifiedId = "testuser123";
+      const wallet = user2.address;
+      const nonce = await registry.getNonce(wallet);
+      const signature = await signRegistration(user2, registry, wallet, unifiedId, nonce);
+      
       await expect(
-        registry.connect(user1).createUnifiedID(unifiedId, user2.address)
+        registry.connect(user1).createUnifiedIDByRegistrar(unifiedId, wallet, signature)
       ).to.be.revertedWithCustomError(registry, "OnlyRegistrar");
     });
 
@@ -345,19 +1057,27 @@ describe("UnifiedIDRegistry", function () {
       const { registry, initialRegistrar, user1 } = await loadFixture(deployFixture);
 
       const unifiedId = "testuser123";
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+      
       await expect(
-        registry.connect(initialRegistrar).createUnifiedID(unifiedId, user1.address)
+        registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId, wallet, signature)
       )
         .to.emit(registry, "UnifiedIDCreated")
-        .withArgs(unifiedId, user1.address, anyValue);
+        .withArgs(unifiedId, wallet, anyValue);
     });
 
     it("Should still validate UnifiedID length (too short)", async function () {
       const { registry, initialRegistrar, user1 } = await loadFixture(deployFixture);
 
       const unifiedId = "ab";
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+      
       await expect(
-        registry.connect(initialRegistrar).createUnifiedID(unifiedId, user1.address)
+        registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId, wallet, signature)
       ).to.be.revertedWithCustomError(registry, "UnifiedIdTooShort");
     });
 
@@ -365,8 +1085,12 @@ describe("UnifiedIDRegistry", function () {
       const { registry, initialRegistrar, user1 } = await loadFixture(deployFixture);
 
       const unifiedId = "a".repeat(33);
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+      
       await expect(
-        registry.connect(initialRegistrar).createUnifiedID(unifiedId, user1.address)
+        registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId, wallet, signature)
       ).to.be.revertedWithCustomError(registry, "UnifiedIdTooLong");
     });
 
@@ -374,8 +1098,12 @@ describe("UnifiedIDRegistry", function () {
       const { registry, initialRegistrar, user1 } = await loadFixture(deployFixture);
 
       const unifiedId = "TestUser123";
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+      
       await expect(
-        registry.connect(initialRegistrar).createUnifiedID(unifiedId, user1.address)
+        registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId, wallet, signature)
       ).to.be.revertedWithCustomError(registry, "InvalidUnifiedIdFormat");
     });
 
@@ -383,8 +1111,12 @@ describe("UnifiedIDRegistry", function () {
       const { registry, initialRegistrar, user1 } = await loadFixture(deployFixture);
 
       const unifiedId = "test@user123";
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+      
       await expect(
-        registry.connect(initialRegistrar).createUnifiedID(unifiedId, user1.address)
+        registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId, wallet, signature)
       ).to.be.revertedWithCustomError(registry, "InvalidUnifiedIdFormat");
     });
 
@@ -392,31 +1124,52 @@ describe("UnifiedIDRegistry", function () {
       const { registry, initialRegistrar, user1, user2 } = await loadFixture(deployFixture);
 
       const unifiedId = "testuser123";
-      await registry.connect(initialRegistrar).createUnifiedID(unifiedId, user1.address);
+      const wallet1 = user1.address;
+      const nonce1 = await registry.getNonce(wallet1);
+      const signature1 = await signRegistration(user1, registry, wallet1, unifiedId, nonce1);
+      await registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId, wallet1, signature1);
 
+      const wallet2 = user2.address;
+      const nonce2 = await registry.getNonce(wallet2);
+      const signature2 = await signRegistration(user2, registry, wallet2, unifiedId, nonce2);
       await expect(
-        registry.connect(initialRegistrar).createUnifiedID(unifiedId, user2.address)
+        registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId, wallet2, signature2)
       ).to.be.revertedWithCustomError(registry, "UnifiedIdAlreadyTaken");
     });
 
-    it("Should still prevent zero address as primary wallet", async function () {
-      const { registry, initialRegistrar } = await loadFixture(deployFixture);
+    it("Should prevent zero address as primary wallet (signature verification prevents it)", async function () {
+      const { registry, initialRegistrar, user1 } = await loadFixture(deployFixture);
 
       const unifiedId = "testuser123";
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+      
+      // Try with zero address - signature verification happens first
+      // Since signature is for user1.address but we pass zero address, it will fail at signature verification
+      // Zero address validation still exists in _createUnifiedID but is protected by signature verification
       await expect(
-        registry.connect(initialRegistrar).createUnifiedID(unifiedId, ethers.constants.AddressZero)
-      ).to.be.revertedWithCustomError(registry, "InvalidPrimaryWallet");
+        registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId, ethers.constants.AddressZero, signature)
+      ).to.be.revertedWithCustomError(registry, "InvalidSignature");
+      
+      // Note: Zero address validation is enforced in _createUnifiedID, but signature verification
+      // prevents reaching that check since zero address cannot sign
     });
 
     it("Should still prevent wallet from having multiple UnifiedIDs", async function () {
       const { registry, initialRegistrar, user1 } = await loadFixture(deployFixture);
 
       const unifiedId1 = "testuser123";
-      await registry.connect(initialRegistrar).createUnifiedID(unifiedId1, user1.address);
+      const wallet = user1.address;
+      const nonce1 = await registry.getNonce(wallet);
+      const signature1 = await signRegistration(user1, registry, wallet, unifiedId1, nonce1);
+      await registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId1, wallet, signature1);
 
       const unifiedId2 = "testuser456";
+      const nonce2 = await registry.getNonce(wallet);
+      const signature2 = await signRegistration(user1, registry, wallet, unifiedId2, nonce2);
       await expect(
-        registry.connect(initialRegistrar).createUnifiedID(unifiedId2, user1.address)
+        registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId2, wallet, signature2)
       ).to.be.revertedWithCustomError(registry, "WalletAlreadyHasId");
     });
 
@@ -425,41 +1178,39 @@ describe("UnifiedIDRegistry", function () {
 
       expect(await registry.totalIDs()).to.equal(0);
 
-      await registry.connect(initialRegistrar).createUnifiedID("user1", user1.address);
+      const wallet1 = user1.address;
+      const nonce1 = await registry.getNonce(wallet1);
+      const signature1 = await signRegistration(user1, registry, wallet1, "user1", nonce1);
+      await registry.connect(initialRegistrar).createUnifiedIDByRegistrar("user1", wallet1, signature1);
       expect(await registry.totalIDs()).to.equal(1);
 
-      await registry.connect(initialRegistrar).createUnifiedID("user2", user2.address);
+      const wallet2 = user2.address;
+      const nonce2 = await registry.getNonce(wallet2);
+      const signature2 = await signRegistration(user2, registry, wallet2, "user2", nonce2);
+      await registry.connect(initialRegistrar).createUnifiedIDByRegistrar("user2", wallet2, signature2);
       expect(await registry.totalIDs()).to.equal(2);
     });
 
     it("Should prevent removed registrar from creating UnifiedIDs", async function () {
-      const { registry, owner, initialRegistrar, user1, user2 } = await loadFixture(deployFixture);
+      const { registry, owner, initialRegistrar, user1 } = await loadFixture(deployFixture);
 
       // Remove registrar
       await registry.connect(owner).removeRegistrar(initialRegistrar.address);
 
       // Should not be able to create ID
+      const unifiedId = "testid";
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+      
       await expect(
-        registry.connect(initialRegistrar).createUnifiedID("testid", user1.address)
+        registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId, wallet, signature)
       ).to.be.revertedWithCustomError(registry, "OnlyRegistrar");
     });
   });
 
   // ============ SECTION 4: VIEW FUNCTIONS TESTS ============
   describe("View Functions", function () {
-    it("Should return all registrars from getRegistrars", async function () {
-      const { registry, owner, initialRegistrar, user1, user2 } = await loadFixture(deployFixture);
-
-      await registry.connect(owner).addRegistrar(user1.address);
-      await registry.connect(owner).addRegistrar(user2.address);
-
-      const registrars = await registry.getRegistrars();
-      expect(registrars.length).to.equal(3);
-      expect(registrars).to.include(initialRegistrar.address);
-      expect(registrars).to.include(user1.address);
-      expect(registrars).to.include(user2.address);
-    });
-
     it("Should return correct count from getRegistrarCount", async function () {
       const { registry, owner, user1, user2 } = await loadFixture(deployFixture);
 
@@ -488,12 +1239,15 @@ describe("UnifiedIDRegistry", function () {
       const { registry, initialRegistrar, user1 } = await loadFixture(deployFixture);
 
       const unifiedId = "testuser123";
-      const tx = await registry.connect(initialRegistrar).createUnifiedID(unifiedId, user1.address);
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+      const tx = await registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId, wallet, signature);
       const receipt = await tx.wait();
       const block = await ethers.provider.getBlock(receipt.blockNumber);
 
       const unifiedIDData = await registry.getUnifiedID(unifiedId);
-      expect(unifiedIDData.primaryWallet).to.equal(user1.address);
+      expect(unifiedIDData.primaryWallet).to.equal(wallet);
       expect(unifiedIDData.createdAt).to.equal(block.timestamp);
     });
 
@@ -510,7 +1264,10 @@ describe("UnifiedIDRegistry", function () {
       const { registry, initialRegistrar, user1 } = await loadFixture(deployFixture);
 
       const unifiedId = "testuser123";
-      await registry.connect(initialRegistrar).createUnifiedID(unifiedId, user1.address);
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+      await registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId, wallet, signature);
 
       expect(await registry.unifiedIdExists(unifiedId)).to.be.true;
     });
@@ -526,9 +1283,12 @@ describe("UnifiedIDRegistry", function () {
       const { registry, initialRegistrar, user1 } = await loadFixture(deployFixture);
 
       const unifiedId = "testuser123";
-      await registry.connect(initialRegistrar).createUnifiedID(unifiedId, user1.address);
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+      await registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId, wallet, signature);
 
-      expect(await registry.getPrimaryWallet(unifiedId)).to.equal(user1.address);
+      expect(await registry.getPrimaryWallet(unifiedId)).to.equal(wallet);
     });
 
     it("Should revert getPrimaryWallet if UnifiedID does not exist", async function () {
@@ -544,9 +1304,12 @@ describe("UnifiedIDRegistry", function () {
       const { registry, initialRegistrar, user1 } = await loadFixture(deployFixture);
 
       const unifiedId = "testuser123";
-      await registry.connect(initialRegistrar).createUnifiedID(unifiedId, user1.address);
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+      await registry.connect(initialRegistrar).createUnifiedIDByRegistrar(unifiedId, wallet, signature);
 
-      expect(await registry.getUnifiedIdByWallet(user1.address)).to.equal(unifiedId);
+      expect(await registry.getUnifiedIdByWallet(wallet)).to.equal(unifiedId);
     });
 
     it("Should return empty string from getUnifiedIdByWallet when wallet has no ID", async function () {
@@ -610,22 +1373,19 @@ describe("UnifiedIDRegistry", function () {
       expect(await registry.registrarCount()).to.equal(1);
     });
 
-    it("Should maintain correct registrar array order after removals", async function () {
+    it("Should maintain correct registrar state after removals", async function () {
       const { registry, owner, initialRegistrar, user1, user2, user3 } = await loadFixture(deployFixture);
 
       await registry.connect(owner).addRegistrar(user1.address);
       await registry.connect(owner).addRegistrar(user2.address);
       await registry.connect(owner).addRegistrar(user3.address);
 
+      expect(await registry.getRegistrarCount()).to.equal(4);
+
       // Remove middle registrar (user2)
       await registry.connect(owner).removeRegistrar(user2.address);
 
-      const registrars = await registry.getRegistrars();
-      expect(registrars.length).to.equal(3);
-      expect(registrars).to.include(initialRegistrar.address);
-      expect(registrars).to.include(user1.address);
-      expect(registrars).to.include(user3.address);
-      expect(registrars).to.not.include(user2.address);
+      expect(await registry.getRegistrarCount()).to.equal(3);
 
       // Verify all remaining are still registrars
       expect(await registry.isRegistrar(initialRegistrar.address)).to.be.true;
@@ -640,10 +1400,8 @@ describe("UnifiedIDRegistry", function () {
       await registry.connect(owner).removeRegistrar(initialRegistrar.address);
 
       expect(await registry.registrarCount()).to.equal(0);
+      expect(await registry.getRegistrarCount()).to.equal(0);
       expect(await registry.isRegistrar(initialRegistrar.address)).to.be.false;
-
-      const registrars = await registry.getRegistrars();
-      expect(registrars.length).to.equal(0);
     });
   });
 
@@ -659,9 +1417,17 @@ describe("UnifiedIDRegistry", function () {
       expect(await registry.registrarCount()).to.equal(3);
 
       // Step 2: Create IDs with different registrars
-      await registry.connect(initialRegistrar).createUnifiedID("id01", user1.address);
-      await registry.connect(user1).createUnifiedID("id02", user2.address);
-      await registry.connect(user2).createUnifiedID("id03", user3.address);
+      const nonce1 = await registry.getNonce(user1.address);
+      const signature1 = await signRegistration(user1, registry, user1.address, "id01", nonce1);
+      await registry.connect(initialRegistrar).createUnifiedIDByRegistrar("id01", user1.address, signature1);
+
+      const nonce2 = await registry.getNonce(user2.address);
+      const signature2 = await signRegistration(user2, registry, user2.address, "id02", nonce2);
+      await registry.connect(user1).createUnifiedIDByRegistrar("id02", user2.address, signature2);
+
+      const nonce3 = await registry.getNonce(user3.address);
+      const signature3 = await signRegistration(user3, registry, user3.address, "id03", nonce3);
+      await registry.connect(user2).createUnifiedIDByRegistrar("id03", user3.address, signature3);
 
       expect(await registry.totalIDs()).to.equal(3);
       expect(await registry.unifiedIdExists("id01")).to.be.true;
@@ -675,8 +1441,10 @@ describe("UnifiedIDRegistry", function () {
       expect(await registry.isRegistrar(user1.address)).to.be.false;
 
       // Step 4: Verify removed registrar cannot create new IDs
+      const nonce4 = await registry.getNonce(user3.address);
+      const signature4 = await signRegistration(user3, registry, user3.address, "id04", nonce4);
       await expect(
-        registry.connect(user1).createUnifiedID("id04", user3.address)
+        registry.connect(user1).createUnifiedIDByRegistrar("id04", user3.address, signature4)
       ).to.be.revertedWithCustomError(registry, "OnlyRegistrar");
 
       // Step 5: Verify other registrars can still create IDs
@@ -685,8 +1453,13 @@ describe("UnifiedIDRegistry", function () {
       const newWallet1 = signers[5];
       const newWallet2 = signers[6];
       
-      await registry.connect(initialRegistrar).createUnifiedID("id05", newWallet1.address);
-      await registry.connect(user2).createUnifiedID("id06", newWallet2.address);
+      const nonce5 = await registry.getNonce(newWallet1.address);
+      const signature5 = await signRegistration(newWallet1, registry, newWallet1.address, "id05", nonce5);
+      await registry.connect(initialRegistrar).createUnifiedIDByRegistrar("id05", newWallet1.address, signature5);
+
+      const nonce6 = await registry.getNonce(newWallet2.address);
+      const signature6 = await signRegistration(newWallet2, registry, newWallet2.address, "id06", nonce6);
+      await registry.connect(user2).createUnifiedIDByRegistrar("id06", newWallet2.address, signature6);
 
       expect(await registry.totalIDs()).to.equal(5);
     });
@@ -697,8 +1470,10 @@ describe("UnifiedIDRegistry", function () {
       // Owner adds registrar
       await registry.connect(owner).addRegistrar(user1.address);
 
-      // Registrar creates ID
-      await registry.connect(initialRegistrar).createUnifiedID("id01", user2.address);
+      // Registrar creates ID with signature
+      const nonce = await registry.getNonce(user2.address);
+      const signature = await signRegistration(user2, registry, user2.address, "id01", nonce);
+      await registry.connect(initialRegistrar).createUnifiedIDByRegistrar("id01", user2.address, signature);
 
       // Owner removes registrar
       await registry.connect(owner).removeRegistrar(user1.address);
@@ -711,8 +1486,11 @@ describe("UnifiedIDRegistry", function () {
     it("Should not interfere registrar operations with view functions", async function () {
       const { registry, owner, initialRegistrar, user1, user2 } = await loadFixture(deployFixture);
 
-      // Create ID
-      await registry.connect(initialRegistrar).createUnifiedID("id01", user1.address);
+      // Create ID with signature
+      const wallet = user1.address;
+      const nonce = await registry.getNonce(wallet);
+      const signature = await signRegistration(user1, registry, wallet, "id01", nonce);
+      await registry.connect(initialRegistrar).createUnifiedIDByRegistrar("id01", wallet, signature);
 
       // Add/remove registrars
       await registry.connect(owner).addRegistrar(user2.address);
@@ -720,11 +1498,11 @@ describe("UnifiedIDRegistry", function () {
 
       // View functions should still work
       expect(await registry.unifiedIdExists("id01")).to.be.true;
-      expect(await registry.getPrimaryWallet("id01")).to.equal(user1.address);
-      expect(await registry.getUnifiedIdByWallet(user1.address)).to.equal("id01");
+      expect(await registry.getPrimaryWallet("id01")).to.equal(wallet);
+      expect(await registry.getUnifiedIdByWallet(wallet)).to.equal("id01");
 
       const unifiedIDData = await registry.getUnifiedID("id01");
-      expect(unifiedIDData.primaryWallet).to.equal(user1.address);
+      expect(unifiedIDData.primaryWallet).to.equal(wallet);
     });
 
     it("Should handle complex scenario with multiple registrars creating and removing", async function () {
@@ -745,11 +1523,22 @@ describe("UnifiedIDRegistry", function () {
       const wallet6 = signers[10];
       const wallet7 = signers[11];
 
-      // Each registrar creates an ID
-      await registry.connect(initialRegistrar).createUnifiedID("id01", wallet1.address);
-      await registry.connect(user1).createUnifiedID("id02", wallet2.address);
-      await registry.connect(user2).createUnifiedID("id03", wallet3.address);
-      await registry.connect(user3).createUnifiedID("id04", wallet4.address);
+      // Each registrar creates an ID with signatures
+      const nonce1 = await registry.getNonce(wallet1.address);
+      const signature1 = await signRegistration(wallet1, registry, wallet1.address, "id01", nonce1);
+      await registry.connect(initialRegistrar).createUnifiedIDByRegistrar("id01", wallet1.address, signature1);
+
+      const nonce2 = await registry.getNonce(wallet2.address);
+      const signature2 = await signRegistration(wallet2, registry, wallet2.address, "id02", nonce2);
+      await registry.connect(user1).createUnifiedIDByRegistrar("id02", wallet2.address, signature2);
+
+      const nonce3 = await registry.getNonce(wallet3.address);
+      const signature3 = await signRegistration(wallet3, registry, wallet3.address, "id03", nonce3);
+      await registry.connect(user2).createUnifiedIDByRegistrar("id03", wallet3.address, signature3);
+
+      const nonce4 = await registry.getNonce(wallet4.address);
+      const signature4 = await signRegistration(wallet4, registry, wallet4.address, "id04", nonce4);
+      await registry.connect(user3).createUnifiedIDByRegistrar("id04", wallet4.address, signature4);
 
       expect(await registry.totalIDs()).to.equal(4);
 
@@ -757,9 +1546,17 @@ describe("UnifiedIDRegistry", function () {
       await registry.connect(owner).removeRegistrar(user2.address);
 
       // Remaining registrars should still work
-      await registry.connect(initialRegistrar).createUnifiedID("id05", wallet5.address);
-      await registry.connect(user1).createUnifiedID("id06", wallet6.address);
-      await registry.connect(user3).createUnifiedID("id07", wallet7.address);
+      const nonce5 = await registry.getNonce(wallet5.address);
+      const signature5 = await signRegistration(wallet5, registry, wallet5.address, "id05", nonce5);
+      await registry.connect(initialRegistrar).createUnifiedIDByRegistrar("id05", wallet5.address, signature5);
+
+      const nonce6 = await registry.getNonce(wallet6.address);
+      const signature6 = await signRegistration(wallet6, registry, wallet6.address, "id06", nonce6);
+      await registry.connect(user1).createUnifiedIDByRegistrar("id06", wallet6.address, signature6);
+
+      const nonce7 = await registry.getNonce(wallet7.address);
+      const signature7 = await signRegistration(wallet7, registry, wallet7.address, "id07", nonce7);
+      await registry.connect(user3).createUnifiedIDByRegistrar("id07", wallet7.address, signature7);
 
       expect(await registry.totalIDs()).to.equal(7);
 

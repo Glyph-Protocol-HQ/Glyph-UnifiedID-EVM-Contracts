@@ -6,6 +6,10 @@ A decentralized registry system for managing UnifiedID mappings to wallet addres
 
 UnifiedIDRegistry is a smart contract that provides a secure and efficient way to map human-readable UnifiedIDs to blockchain wallet addresses. The contract uses a multi-registrar architecture where multiple authorized registrars can create new UnifiedID entries, ensuring controlled and verified identity creation.
 
+**Version 1.0.0**: All registrations now require EIP-712 signatures for enhanced security and user consent. The legacy `createUnifiedID` function (without signature requirement) has been removed.
+
+The contract includes comprehensive EIP-712 support for typed structured data signing, enabling secure, gasless registration flows where wallets can sign registration requests off-chain, and registrars can verify and process them on-chain. Nonce tracking prevents signature replay attacks, ensuring each signature can only be used once.
+
 ### Key Features
 
 - **Secure Identity Mapping**: Map UnifiedIDs to primary wallet addresses with on-chain verification
@@ -13,6 +17,9 @@ UnifiedIDRegistry is a smart contract that provides a secure and efficient way t
 - **Registrar Management**: Contract owner can add or remove registrars dynamically
 - **Bidirectional Lookup**: Query UnifiedID by wallet address or wallet by UnifiedID
 - **Format Validation**: Enforces strict format rules for UnifiedIDs (lowercase alphanumeric, 4-16 characters)
+- **EIP-712 Support**: Built-in support for EIP-712 typed structured data hashing and signing with nonce tracking for replay protection
+- **Signature-Based Registration**: All registrations require EIP-712 signatures for enhanced security and user consent
+- **Multiple Registration Paths**: Supports two signature-based registration methods - registrar-submitted with user signature, and self-service registration
 - **Reentrancy Protection**: Uses OpenZeppelin's ReentrancyGuard for security
 - **Multi-Network Support**: Deployable to Polygon, Ethereum Sepolia, Base Sepolia, BNB Chain (coming soon), and more
 
@@ -112,7 +119,17 @@ npm run test
 npm run coverage
 ```
 
-The test suite includes deployment tests, registrar management tests, UnifiedID creation tests, and comprehensive edge case coverage.
+The test suite includes:
+- Deployment tests
+- EIP-712 infrastructure tests (domain separator, typehash, hash computation)
+- Nonce tracking tests
+- Signature verification error and event tests
+- Registrar management tests
+- UnifiedID creation tests (registrar-submitted with signature, self-service)
+- Signature-based registration tests (`createUnifiedIDByRegistrar` and `createUnifiedIDSelf`)
+- Comprehensive edge case coverage
+- Integration tests with EIP-712 signature verification
+- Tests verifying legacy `createUnifiedID` function no longer exists
 
 ## Deployment
 
@@ -169,25 +186,122 @@ Replace:
 - `<CONTRACT_ADDRESS>` with your deployed contract address
 - `<INITIAL_REGISTRAR_ADDRESS>` with the initial registrar address used during deployment
 
+## Registration Methods
+
+The contract provides two signature-based registration methods to suit different use cases. **All registrations require EIP-712 signatures** for enhanced security and user consent.
+
+### 1. Registrar-Submitted Registration (`createUnifiedIDByRegistrar`)
+**Use Case**: Gasless registration where user signs off-chain, registrar submits on-chain
+- **Who calls**: Authorized registrar
+- **Signature required**: Yes (EIP-712 signature from user)
+- **Gas payer**: Registrar
+- **Best for**: User-initiated registrations where registrar pays gas fees, relayer patterns, backend-initiated registrations
+
+### 2. Self-Service Registration (`createUnifiedIDSelf`)
+**Use Case**: Users register themselves directly
+- **Who calls**: User (any address)
+- **Signature required**: Yes (EIP-712 signature from user)
+- **Gas payer**: User
+- **Best for**: Decentralized registration, user-controlled registrations, DApp integrations, frontend-initiated registrations
+
+### Breaking Change Notice
+
+**Version 1.0.0**: The legacy `createUnifiedID` function (without signature requirement) has been removed. All registrations now require EIP-712 signatures for enhanced security and user consent.
+
+**Migration Guide**:
+- **Backend/Relayer**: Collect user EIP-712 signatures before calling `createUnifiedIDByRegistrar`
+- **Frontend**: Use `createUnifiedIDSelf` for direct user registration with signature
+- **Existing Integrations**: Update all code that calls `createUnifiedID()` to use signature-based functions
+
+## EIP-712 Signature-Based Registration
+
+The contract supports EIP-712 typed structured data signing for secure, gasless registration flows. Here's how to use it:
+
+### Off-Chain Signature Generation
+
+```javascript
+const { ethers } = require("ethers");
+
+async function signRegistration(wallet, contractAddress, chainId, walletAddress, unifiedId, nonce) {
+  const domain = {
+    name: "UnifiedIDRegistry",
+    version: "1",
+    chainId: chainId,
+    verifyingContract: contractAddress
+  };
+  
+  const types = {
+    UnifiedIdRegistration: [
+      { name: "wallet", type: "address" },
+      { name: "unifiedId", type: "string" },
+      { name: "nonce", type: "uint256" }
+    ]
+  };
+  
+  const value = {
+    wallet: walletAddress,
+    unifiedId: unifiedId,
+    nonce: nonce
+  };
+  
+  // Sign with MetaMask or other EIP-712 compatible wallet
+  const signature = await wallet._signTypedData(domain, types, value);
+  return signature;
+}
+
+// Example usage
+const wallet = new ethers.Wallet("PRIVATE_KEY");
+const contractAddress = "0x..."; // Your contract address
+const chainId = 84532; // Base Sepolia
+const walletToRegister = "0x...";
+const unifiedId = "alice123";
+
+// Get current nonce from contract
+const registry = new ethers.Contract(contractAddress, abi, provider);
+const nonce = await registry.getNonce(walletToRegister);
+
+// Generate signature
+const signature = await signRegistration(
+  wallet,
+  contractAddress,
+  chainId,
+  walletToRegister,
+  unifiedId,
+  nonce
+);
+
+// Verify hash matches contract computation
+const contractHash = await registry.getRegistrationHash(
+  walletToRegister,
+  unifiedId,
+  nonce
+);
+console.log("Hash to sign:", contractHash);
+```
+
+### Verifying Signatures
+
+The contract's `getRegistrationHash()` function returns the exact hash that should be signed. This hash can be verified off-chain and used with the signature-based registration functions:
+
+- **`createUnifiedIDByRegistrar`**: For registrar-submitted registrations with user signatures
+- **`createUnifiedIDSelf`**: For self-service registrations where users submit their own signatures
+
+Both functions verify the signature matches the expected wallet and current nonce, providing replay protection.
+
 ## Usage Examples
 
 ### Hardhat Tasks
 
 The project includes several Hardhat tasks for interacting with the contract:
 
-#### 1. Create a UnifiedID
+#### 1. Create a UnifiedID (Signature Required)
 
-```bash
-npx hardhat create-id \
-  --unifiedid "alice123" \
-  --wallet 0x0000000000000000000000000000000000000000 \
-  --network baseSepolia
-```
+**Note**: All registrations now require EIP-712 signatures. Use the signature-based registration functions:
 
-This will:
-- Create a new UnifiedID "alice123" mapped to the specified wallet
-- Display transaction hash and gas usage
-- Require the signer to be an authorized registrar
+- For registrar-submitted registration: Use `createUnifiedIDByRegistrar` with user signature
+- For self-service registration: Use `createUnifiedIDSelf` with user signature
+
+See the "EIP-712 Signature-Based Registration" section below for signature generation examples.
 
 #### 2. Get UnifiedID Details
 
@@ -213,8 +327,8 @@ npx hardhat run scripts/manage-registrars.js --network baseSepolia
 This interactive script allows you to:
 - Add new registrars (owner only)
 - Remove existing registrars (owner only)
-- List all current registrars
 - Check if an address is a registrar
+- Get the total count of registrars
 
 ### Programmatic Usage
 
@@ -240,6 +354,37 @@ async function example() {
   const unifiedId = await registry.getUnifiedIdByWallet(
     "0x0000000000000000000000000000000000000000"
   );
+
+  // EIP-712: Get registration hash for signature-based registration
+  const wallet = "0x0000000000000000000000000000000000000000";
+  const unifiedIdToRegister = "alice123";
+  const nonce = await registry.getNonce(wallet);
+  const registrationHash = await registry.getRegistrationHash(
+    wallet,
+    unifiedIdToRegister,
+    nonce
+  );
+  console.log("Registration hash:", registrationHash);
+
+  // Get domain separator and typehash for EIP-712 signing
+  const domainSeparator = await registry.domainSeparator();
+  const typehash = await registry.getUnifiedIdTypehash();
+  console.log("Domain separator:", domainSeparator);
+  console.log("Typehash:", typehash);
+
+  // Example: Self-service registration with signature
+  const wallet = "0x..."; // User's wallet
+  const unifiedIdToRegister = "alice123";
+  const nonce = await registry.getNonce(wallet);
+  
+  // User signs the registration (off-chain)
+  const signature = await signRegistration(walletSigner, registry, wallet, unifiedIdToRegister, nonce);
+  
+  // User submits their own registration
+  await registry.connect(walletSigner).createUnifiedIDSelf(unifiedIdToRegister, signature);
+  
+  // OR: Registrar submits on behalf of user
+  // await registry.connect(registrar).createUnifiedIDByRegistrar(unifiedIdToRegister, wallet, signature);
 }
 ```
 
@@ -266,31 +411,51 @@ async function example() {
 - **Description**: Checks if an address is an authorized registrar
 - **Returns**: `true` if the address is a registrar, `false` otherwise
 
-#### `getRegistrars() → address[]`
-- **Access**: Public view
-- **Description**: Gets all registrar addresses
-- **Returns**: Array of all registrar addresses
-
 #### `getRegistrarCount() → uint256`
 - **Access**: Public view
 - **Description**: Gets the total number of active registrars
 - **Returns**: The count of active registrars
+- **Note**: The contract uses a simplified storage design without array enumeration for gas efficiency. Use `isRegistrar()` to check individual addresses.
 
 ### UnifiedID Management Functions
 
-#### `createUnifiedID(string calldata unifiedId, address primaryWallet)`
+The contract supports two signature-based registration methods. **All registrations require EIP-712 signatures**.
+
+#### `createUnifiedIDByRegistrar(string calldata unifiedId, address primaryWallet, bytes calldata signature)`
 - **Access**: Registrar only
-- **Description**: Creates a new UnifiedID and maps it to a primary wallet
+- **Description**: Creates a new UnifiedID via registrar with user signature verification
 - **Parameters**: 
   - `unifiedId`: The UnifiedID string to create (4-16 characters, lowercase alphanumeric)
   - `primaryWallet`: The primary wallet address to associate with the UnifiedID
+  - `signature`: The EIP-712 signature from `primaryWallet` authorizing this registration
 - **Requirements**: 
   - Caller must be an authorized registrar
+  - Signature must be valid EIP-712 signature from `primaryWallet`
+  - Signature must match current nonce for `primaryWallet`
   - UnifiedID must not already exist
   - UnifiedID must be valid format (lowercase a-z, 0-9, 4-16 chars)
   - Wallet must not already have a UnifiedID
   - Wallet address must not be zero address
-- **Events**: Emits `UnifiedIDCreated` event
+- **Events**: Emits `UnifiedIDCreated` and `NonceConsumed` events
+- **Use Case**: Gasless registration flow where user signs off-chain, registrar submits on-chain
+- **Security**: Nonce is incremented after successful registration to prevent signature replay
+
+#### `createUnifiedIDSelf(string calldata unifiedId, bytes calldata signature)`
+- **Access**: Public (any address)
+- **Description**: Creates a new UnifiedID by the user themselves with signature verification
+- **Parameters**: 
+  - `unifiedId`: The UnifiedID string to create (4-16 characters, lowercase alphanumeric)
+  - `signature`: The EIP-712 signature from `msg.sender` authorizing this registration
+- **Requirements**: 
+  - Signature must be valid EIP-712 signature from `msg.sender`
+  - Signature must match current nonce for `msg.sender`
+  - UnifiedID must not already exist
+  - UnifiedID must be valid format (lowercase a-z, 0-9, 4-16 chars)
+  - Wallet (`msg.sender`) must not already have a UnifiedID
+- **Events**: Emits `UnifiedIDCreated` and `NonceConsumed` events
+- **Use Case**: Self-service registration where users register themselves directly
+- **Security**: Nonce is incremented after successful registration to prevent signature replay
+- **Note**: No registrar required - any address can register themselves
 
 ### View Functions
 
@@ -326,16 +491,65 @@ async function example() {
   - `wallet`: The wallet address to query
 - **Returns**: The UnifiedID string associated with the wallet, or empty string if wallet has no ID
 
+#### `getNonce(address wallet) → uint256`
+- **Access**: Public view
+- **Description**: Gets the current nonce for a wallet address
+- **Parameters**: 
+  - `wallet`: The wallet address to query
+- **Returns**: The current nonce value (starts at 0 for new addresses)
+- **Use Case**: Used for signature replay protection in EIP-712 based registration flows
+
+#### `domainSeparator() → bytes32`
+- **Access**: Public view
+- **Description**: Returns the EIP-712 domain separator for use in off-chain signature verification
+- **Returns**: The domain separator bytes32 value
+- **Use Case**: Enables off-chain applications to verify typed structured data signatures according to EIP-712 standard
+
+#### `getUnifiedIdTypehash() → bytes32`
+- **Access**: Public view
+- **Description**: Returns the EIP-712 typehash for UnifiedID registration
+- **Returns**: The typehash bytes32 value for "UnifiedIdRegistration(address wallet,string unifiedId,uint256 nonce)"
+- **Use Case**: Enables off-chain applications to construct typed structured data messages for signature verification
+
+#### `getRegistrationHash(address wallet, string calldata unifiedId, uint256 nonce) → bytes32`
+- **Access**: Public view
+- **Description**: Computes the EIP-712 hash for a registration request
+- **Parameters**: 
+  - `wallet`: The wallet address to be registered
+  - `unifiedId`: The UnifiedID to be registered
+  - `nonce`: The nonce to use (should match current nonce for wallet)
+- **Returns**: The digest that needs to be signed by the wallet
+- **Use Case**: Enables frontend/backend applications to compute the exact hash that wallets need to sign for EIP-712 based registration flows
+- **Example**: Use this hash with `signTypedData` in MetaMask or other EIP-712 compatible wallets
+
 ### Public State Variables
 
 - `registrarCount` (uint256): Total count of active registrars
 - `totalIDs` (uint256): Total number of UnifiedIDs created
+- `nonces` (mapping(address => uint256)): Mapping from wallet address to current nonce for signature replay protection
 
 ### Events
 
 - `UnifiedIDCreated(string indexed unifiedId, address indexed primaryWallet, uint256 timestamp)`: Emitted when a new UnifiedID is created
 - `RegistrarAdded(address indexed registrar, address indexed addedBy, uint256 timestamp)`: Emitted when a new registrar is added
 - `RegistrarRemoved(address indexed registrar, address indexed removedBy, uint256 timestamp)`: Emitted when a registrar is removed
+- `NonceConsumed(address indexed wallet, uint256 nonce)`: Emitted when a wallet's nonce is consumed during successful signature-based registration
+
+### Custom Errors
+
+- `OnlyRegistrar()`: Thrown when a function is called by an address that is not an authorized registrar
+- `UnifiedIdTooShort()`: Thrown when a UnifiedID is too short (less than minimum length)
+- `UnifiedIdTooLong()`: Thrown when a UnifiedID is too long (exceeds maximum length)
+- `InvalidUnifiedIdFormat()`: Thrown when a UnifiedID format is invalid
+- `UnifiedIdAlreadyTaken()`: Thrown when attempting to create a UnifiedID that already exists
+- `InvalidPrimaryWallet()`: Thrown when the primary wallet address is invalid (zero address)
+- `WalletAlreadyHasId()`: Thrown when a wallet already has an associated UnifiedID
+- `UnifiedIdDoesNotExist()`: Thrown when querying a UnifiedID that does not exist
+- `InvalidRegistrarAddress()`: Thrown when attempting to set an invalid registrar address (zero address)
+- `RegistrarAlreadyAdded()`: Thrown when attempting to add an address that is already registered as a registrar
+- `RegistrarDoesNotExist()`: Thrown when attempting to remove a registrar that does not currently exist
+- `InvalidSignature()`: Thrown when signature verification fails - recovered signer doesn't match expected wallet
+- `SignatureExpired()`: Thrown when signature deadline has passed (reserved for future use)
 
 ## Security Considerations
 
@@ -364,12 +578,26 @@ async function example() {
 
 4. **Gas Optimization**:
    - Contract uses optimizer with 200 runs
-   - Efficient storage patterns
+   - Efficient storage patterns (simplified registrar storage without array enumeration)
    - Minimal external calls
+   - Registrar management uses mapping-only storage for reduced gas costs
 
 5. **Reentrancy Protection**:
    - All state-changing functions use `nonReentrant` modifier
    - Follows checks-effects-interactions pattern
+
+6. **EIP-712 Signature Verification** (Required for All Registrations):
+   - **All registrations require EIP-712 signatures** - the legacy `createUnifiedID` function has been removed
+   - Contract supports EIP-712 typed structured data signing
+   - Nonce tracking prevents signature replay attacks
+   - Domain separator and typehash are exposed for off-chain verification
+   - Use `getRegistrationHash()` to compute the exact hash that needs to be signed
+   - Always verify signatures match the expected wallet address before processing
+   - Two signature-based registration functions available:
+     - `createUnifiedIDByRegistrar`: For registrar-submitted registrations (registrar pays gas)
+     - `createUnifiedIDSelf`: For self-service registrations (user pays gas)
+   - Both functions increment nonce only on successful registration
+   - **Breaking Change**: Version 1.0.0 removed the legacy `createUnifiedID` function without signature requirement
 
 
 ## Available Scripts

@@ -3,26 +3,34 @@ pragma solidity ^0.8.19;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 
 /**
  * @title UnifiedIDRegistry
  * @dev Registry contract for managing UnifiedID mappings to wallet addresses
- * @notice This contract allows a relayer to create UnifiedIDs and map them to primary wallets
+ * @notice This contract allows registrars or users to create UnifiedIDs with EIP-712 signature verification
+ * @notice Supports EIP-712 for typed structured data hashing and signing
+ * @custom:version 1.0.0 - EIP-712 signature verification required for all registrations
  */
-contract UnifiedIDRegistry is Ownable, ReentrancyGuard {
+contract UnifiedIDRegistry is Ownable, ReentrancyGuard, EIP712 {
+    // ============ Libraries ============
+    
+    using ECDSA for bytes32;
+
     // ============ State Variables ============
 
     /// @dev Mapping to determine whether an address is an active registrar authorized to create UnifiedIDs
     mapping(address => bool) private _isRegistrar;
-
-    /// @dev Array containing every registrar address ever authorized, enabling enumeration of current registrars
-    address[] private _registrarList;
 
     /// @dev Total count of active registrar addresses for quick external access
     uint256 public registrarCount;
 
     /// @dev Total number of UnifiedIDs created
     uint256 public totalIDs;
+
+    /// @dev Mapping from wallet address to current nonce for signature replay protection
+    mapping(address => uint256) public nonces;
 
     // ============ Structs ============
 
@@ -85,6 +93,16 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard {
         uint256 timestamp
     );
 
+    /**
+     * @dev Emitted when a wallet's nonce is consumed during successful registration
+     * @param wallet The wallet address whose nonce was consumed (indexed)
+     * @param nonce The nonce value that was consumed
+     */
+    event NonceConsumed(
+        address indexed wallet,
+        uint256 nonce
+    );
+
     // ============ Custom Errors ============
 
     /// @dev Thrown when a function is called by an address that is not an authorized registrar
@@ -120,6 +138,12 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard {
     /// @dev Thrown when attempting to remove a registrar that does not currently exist
     error RegistrarDoesNotExist();
 
+    /// @dev Thrown when signature verification fails - recovered signer doesn't match expected wallet
+    error InvalidSignature();
+
+    /// @dev Thrown when signature deadline has passed (reserved for future use)
+    error SignatureExpired();
+
     // ============ Constants ============
 
     /// @dev Minimum length for a UnifiedID (4 characters)
@@ -127,6 +151,10 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard {
 
     /// @dev Maximum length for a UnifiedID (16 characters)
     uint256 private constant MAX_UNIFIED_ID_LENGTH = 16;  // 
+
+    /// @dev EIP-712 typehash for UnifiedID registration
+    bytes32 private constant UNIFIED_ID_TYPEHASH =
+        keccak256("UnifiedIdRegistration(address wallet,string unifiedId,uint256 nonce)");
 
     // ============ Modifiers ============
 
@@ -146,13 +174,12 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard {
      * @dev Constructor to initialize the contract with an initial registrar
      * @param _initialRegistrar The address of the first registrar authorized to create UnifiedIDs
      */
-    constructor(address _initialRegistrar) Ownable(msg.sender) {
+    constructor(address _initialRegistrar) Ownable(msg.sender) EIP712("UnifiedIDRegistry", "1") {
         if (_initialRegistrar == address(0)) {
             revert InvalidRegistrarAddress();
         }
 
         _isRegistrar[_initialRegistrar] = true;
-        _registrarList.push(_initialRegistrar);
         registrarCount = 1;
 
         emit RegistrarAdded(_initialRegistrar, msg.sender, block.timestamp);
@@ -161,51 +188,67 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard {
     // ============ External Functions ============
 
     /**
-     * @dev Creates a new UnifiedID and maps it to a primary wallet
+     * @dev Creates a new UnifiedID via registrar with user signature verification
      * @param unifiedId The UnifiedID string to create
-     * @param primaryWallet The primary wallet address to associate with the UnifiedID
-     * @notice Only callable by authorized registrars, non-reentrant
+     * @param primaryWallet The primary wallet address to associate
+     * @param signature The EIP-712 signature from primaryWallet authorizing this registration
+     * @notice Only callable by authorized registrars, requires valid user signature
      */
-    function createUnifiedID(
+    function createUnifiedIDByRegistrar(
         string calldata unifiedId,
-        address primaryWallet
+        address primaryWallet,
+        bytes calldata signature
     ) external onlyRegistrar nonReentrant {
-        // Validate UnifiedID format
-        _validateUnifiedIdFormat(unifiedId);
+        uint256 nonce = nonces[primaryWallet];
 
-        // Check if UnifiedID already exists
-        if (_unifiedIdExists[unifiedId]) {
-            revert UnifiedIdAlreadyTaken();
+        bytes32 digest = _hashUnifiedIdMessage(
+            primaryWallet,
+            unifiedId,
+            nonce
+        );
+
+        address signer = digest.recover(signature);
+        if (signer != primaryWallet) {
+            revert InvalidSignature();
         }
 
-        // Validate primary wallet address
-        if (primaryWallet == address(0)) {
-            revert InvalidPrimaryWallet();
+        // Consume nonce only on success
+        nonces[primaryWallet] = nonce + 1;
+        emit NonceConsumed(primaryWallet, nonce);
+
+        _createUnifiedID(unifiedId, primaryWallet);
+    }
+
+    /**
+     * @dev Creates a new UnifiedID by the user themselves with signature verification
+     * @param unifiedId The UnifiedID string to create
+     * @param signature The EIP-712 signature from msg.sender authorizing this registration
+     * @notice Callable by any address for themselves, requires valid signature
+     */
+    function createUnifiedIDSelf(
+        string calldata unifiedId,
+        bytes calldata signature
+    ) external nonReentrant {
+        address wallet = msg.sender;
+
+        uint256 nonce = nonces[wallet];
+
+        bytes32 digest = _hashUnifiedIdMessage(
+            wallet,
+            unifiedId,
+            nonce
+        );
+
+        address signer = digest.recover(signature);
+        if (signer != wallet) {
+            revert InvalidSignature();
         }
 
-        // Check if wallet already has a UnifiedID
-        bytes memory existingId = bytes(walletToUnifiedId[primaryWallet]);
-        if (existingId.length > 0) {
-            revert WalletAlreadyHasId();
-        }
+        // Consume nonce only on success
+        nonces[wallet] = nonce + 1;
+        emit NonceConsumed(wallet, nonce);
 
-        // Create the UnifiedID entry
-        uint256 timestamp = block.timestamp;
-        registry[unifiedId] = UnifiedID({
-            primaryWallet: primaryWallet,
-            createdAt: timestamp
-        });
-
-        // Update mappings
-        walletToUnifiedId[primaryWallet] = unifiedId;
-        _unifiedIdExists[unifiedId] = true;
-
-        unchecked {
-            totalIDs++;
-        }
-
-        // Emit event
-        emit UnifiedIDCreated(unifiedId, primaryWallet, timestamp);
+        _createUnifiedID(unifiedId, wallet);
     }
 
     // ============ Registrar Management Functions ============
@@ -225,7 +268,6 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard {
         }
 
         _isRegistrar[registrar] = true;
-        _registrarList.push(registrar);
 
         unchecked {
             registrarCount++;
@@ -246,14 +288,6 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard {
 
         _isRegistrar[registrar] = false;
 
-        for (uint256 i = 0; i < _registrarList.length; i++) {
-            if (_registrarList[i] == registrar) {
-                _registrarList[i] = _registrarList[_registrarList.length - 1];
-                _registrarList.pop();
-                break;
-            }
-        }
-
         unchecked {
             registrarCount--;
         }
@@ -268,14 +302,6 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard {
      */
     function isRegistrar(address account) external view returns (bool) {
         return _isRegistrar[account];
-    }
-
-    /**
-     * @dev Gets all registrar addresses
-     * @return Array of all registrar addresses
-     */
-    function getRegistrars() external view returns (address[] memory) {
-        return _registrarList;
     }
 
     /**
@@ -338,7 +364,120 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard {
         return walletToUnifiedId[wallet];
     }
 
+    /**
+     * @dev Gets the current nonce for a wallet address
+     * @param wallet The wallet address to query
+     * @return The current nonce value
+     */
+    function getNonce(address wallet) external view returns (uint256) {
+        return nonces[wallet];
+    }
+
+    /**
+     * @dev Returns the EIP-712 domain separator
+     * @return The domain separator bytes32 value
+     * @notice This function exposes the domain separator for use in off-chain signature verification
+     */
+    function domainSeparator() external view returns (bytes32) {
+        return _domainSeparatorV4();
+    }
+
+    /**
+     * @dev Returns the EIP-712 typehash for UnifiedID registration
+     * @return The typehash bytes32 value
+     * @notice This function exposes the typehash for use in off-chain signature verification
+     */
+    function getUnifiedIdTypehash() external pure returns (bytes32) {
+        return UNIFIED_ID_TYPEHASH;
+    }
+
+    /**
+     * @dev Computes the EIP-712 hash for a registration request (for frontend/backend use)
+     * @param wallet The wallet address to be registered
+     * @param unifiedId The UnifiedID to be registered
+     * @param nonce The nonce to use (should match current nonce for wallet)
+     * @return The digest that needs to be signed by the wallet
+     */
+    function getRegistrationHash(
+        address wallet,
+        string calldata unifiedId,
+        uint256 nonce
+    ) external view returns (bytes32) {
+        return _hashUnifiedIdMessage(wallet, unifiedId, nonce);
+    }
+
     // ============ Internal Functions ============
+
+    /**
+     * @dev Internal function to create a UnifiedID - shared by both registration paths
+     * @param unifiedId The UnifiedID string to create
+     * @param primaryWallet The primary wallet address to associate
+     */
+    function _createUnifiedID(
+        string calldata unifiedId,
+        address primaryWallet
+    ) internal {
+        // Validate UnifiedID format
+        _validateUnifiedIdFormat(unifiedId);
+
+        // Check if UnifiedID already exists
+        if (_unifiedIdExists[unifiedId]) {
+            revert UnifiedIdAlreadyTaken();
+        }
+
+        // Validate primary wallet address
+        if (primaryWallet == address(0)) {
+            revert InvalidPrimaryWallet();
+        }
+
+        // Check if wallet already has a UnifiedID
+        bytes memory existingId = bytes(walletToUnifiedId[primaryWallet]);
+        if (existingId.length > 0) {
+            revert WalletAlreadyHasId();
+        }
+
+        // Create the UnifiedID entry
+        uint256 timestamp = block.timestamp;
+        registry[unifiedId] = UnifiedID({
+            primaryWallet: primaryWallet,
+            createdAt: timestamp
+        });
+
+        // Update mappings
+        walletToUnifiedId[primaryWallet] = unifiedId;
+        _unifiedIdExists[unifiedId] = true;
+
+        unchecked {
+            totalIDs++;
+        }
+
+        // Emit event
+        emit UnifiedIDCreated(unifiedId, primaryWallet, timestamp);
+    }
+
+    /**
+     * @dev Builds the EIP-712 typed data hash for UnifiedID registration
+     * @param wallet The wallet address being registered
+     * @param unifiedId The UnifiedID string being registered
+     * @param nonce The current nonce for the wallet
+     * @return The EIP-712 compliant digest ready for signature verification
+     */
+    function _hashUnifiedIdMessage(
+        address wallet,
+        string calldata unifiedId,
+        uint256 nonce
+    ) internal view returns (bytes32) {
+        return _hashTypedDataV4(
+            keccak256(
+                abi.encode(
+                    UNIFIED_ID_TYPEHASH,
+                    wallet,
+                    keccak256(bytes(unifiedId)),
+                    nonce
+                )
+            )
+        );
+    }
 
     /**
      * @dev Validates the format of a UnifiedID string
