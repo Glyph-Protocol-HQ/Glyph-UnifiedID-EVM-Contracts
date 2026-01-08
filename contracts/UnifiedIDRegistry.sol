@@ -9,8 +9,9 @@ import "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 /**
  * @title UnifiedIDRegistry
  * @dev Registry contract for managing UnifiedID mappings to wallet addresses
- * @notice This contract allows a relayer to create UnifiedIDs and map them to primary wallets
+ * @notice This contract allows registrars or users to create UnifiedIDs with EIP-712 signature verification
  * @notice Supports EIP-712 for typed structured data hashing and signing
+ * @custom:version 1.0.0 - EIP-712 signature verification required for all registrations
  */
 contract UnifiedIDRegistry is Ownable, ReentrancyGuard, EIP712 {
     // ============ Libraries ============
@@ -185,19 +186,6 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard, EIP712 {
     }
 
     // ============ External Functions ============
-
-    /**
-     * @dev Creates a new UnifiedID and maps it to a primary wallet
-     * @param unifiedId The UnifiedID string to create
-     * @param primaryWallet The primary wallet address to associate with the UnifiedID
-     * @notice Only callable by authorized registrars, non-reentrant
-     */
-    function createUnifiedID(
-        string calldata unifiedId,
-        address primaryWallet
-    ) external onlyRegistrar nonReentrant {
-        _createUnifiedID(unifiedId, primaryWallet);
-    }
 
     /**
      * @dev Creates a new UnifiedID via registrar with user signature verification
