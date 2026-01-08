@@ -395,7 +395,46 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard, EIP712 {
         return UNIFIED_ID_TYPEHASH;
     }
 
+    /**
+     * @dev Computes the EIP-712 hash for a registration request (for frontend/backend use)
+     * @param wallet The wallet address to be registered
+     * @param unifiedId The UnifiedID to be registered
+     * @param nonce The nonce to use (should match current nonce for wallet)
+     * @return The digest that needs to be signed by the wallet
+     */
+    function getRegistrationHash(
+        address wallet,
+        string calldata unifiedId,
+        uint256 nonce
+    ) external view returns (bytes32) {
+        return _hashUnifiedIdMessage(wallet, unifiedId, nonce);
+    }
+
     // ============ Internal Functions ============
+
+    /**
+     * @dev Builds the EIP-712 typed data hash for UnifiedID registration
+     * @param wallet The wallet address being registered
+     * @param unifiedId The UnifiedID string being registered
+     * @param nonce The current nonce for the wallet
+     * @return The EIP-712 compliant digest ready for signature verification
+     */
+    function _hashUnifiedIdMessage(
+        address wallet,
+        string calldata unifiedId,
+        uint256 nonce
+    ) internal view returns (bytes32) {
+        return _hashTypedDataV4(
+            keccak256(
+                abi.encode(
+                    UNIFIED_ID_TYPEHASH,
+                    wallet,
+                    keccak256(bytes(unifiedId)),
+                    nonce
+                )
+            )
+        );
+    }
 
     /**
      * @dev Validates the format of a UnifiedID string

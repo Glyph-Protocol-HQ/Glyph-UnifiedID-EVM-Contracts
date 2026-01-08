@@ -239,6 +239,183 @@ describe("UnifiedIDRegistry", function () {
     });
   });
 
+  // ============ SECTION 1.8: EIP-712 HASH HELPER TESTS ============
+  describe("EIP-712 Hash Helper Functions", function () {
+    // Helper function for signing registration data
+    async function signRegistration(signer, contract, wallet, unifiedId, nonce) {
+      const network = await ethers.provider.getNetwork();
+      const domain = {
+        name: "UnifiedIDRegistry",
+        version: "1",
+        chainId: network.chainId,
+        verifyingContract: contract.address
+      };
+      
+      const types = {
+        UnifiedIdRegistration: [
+          { name: "wallet", type: "address" },
+          { name: "unifiedId", type: "string" },
+          { name: "nonce", type: "uint256" }
+        ]
+      };
+      
+      const value = { wallet, unifiedId, nonce };
+      
+      return await signer._signTypedData(domain, types, value);
+    }
+
+    it("Should return consistent hash for same inputs", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+
+      const wallet = user1.address;
+      const unifiedId = "testuser123";
+      const nonce = 0;
+
+      const hash1 = await registry.getRegistrationHash(wallet, unifiedId, nonce);
+      const hash2 = await registry.getRegistrationHash(wallet, unifiedId, nonce);
+      const hash3 = await registry.getRegistrationHash(wallet, unifiedId, nonce);
+
+      expect(hash1).to.equal(hash2);
+      expect(hash2).to.equal(hash3);
+      expect(hash1).to.not.equal(ethers.constants.HashZero);
+    });
+
+    it("Should return different hash when wallet changes", async function () {
+      const { registry, user1, user2 } = await loadFixture(deployFixture);
+
+      const unifiedId = "testuser123";
+      const nonce = 0;
+
+      const hash1 = await registry.getRegistrationHash(user1.address, unifiedId, nonce);
+      const hash2 = await registry.getRegistrationHash(user2.address, unifiedId, nonce);
+
+      expect(hash1).to.not.equal(hash2);
+      expect(hash1).to.not.equal(ethers.constants.HashZero);
+      expect(hash2).to.not.equal(ethers.constants.HashZero);
+    });
+
+    it("Should return different hash when unifiedId changes", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+
+      const wallet = user1.address;
+      const nonce = 0;
+
+      const hash1 = await registry.getRegistrationHash(wallet, "testuser123", nonce);
+      const hash2 = await registry.getRegistrationHash(wallet, "testuser456", nonce);
+      const hash3 = await registry.getRegistrationHash(wallet, "differentid", nonce);
+
+      expect(hash1).to.not.equal(hash2);
+      expect(hash2).to.not.equal(hash3);
+      expect(hash1).to.not.equal(hash3);
+      expect(hash1).to.not.equal(ethers.constants.HashZero);
+    });
+
+    it("Should return different hash when nonce changes", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+
+      const wallet = user1.address;
+      const unifiedId = "testuser123";
+
+      const hash1 = await registry.getRegistrationHash(wallet, unifiedId, 0);
+      const hash2 = await registry.getRegistrationHash(wallet, unifiedId, 1);
+      const hash3 = await registry.getRegistrationHash(wallet, unifiedId, 2);
+
+      expect(hash1).to.not.equal(hash2);
+      expect(hash2).to.not.equal(hash3);
+      expect(hash1).to.not.equal(hash3);
+      expect(hash1).to.not.equal(ethers.constants.HashZero);
+    });
+
+    it("Should match hash computed by signTypedData and verify recovered address", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+
+      const wallet = user1.address;
+      const unifiedId = "testuser123";
+      const nonce = 0;
+
+      // Get hash from contract (this is the final hash that should be signed)
+      const contractHash = await registry.getRegistrationHash(wallet, unifiedId, nonce);
+
+      // Sign using signTypedData - ethers.js will compute the same hash internally
+      const signature = await signRegistration(user1, registry, wallet, unifiedId, nonce);
+
+      // Parse signature
+      const sig = ethers.utils.splitSignature(signature);
+      
+      // The contract hash is already the final EIP-712 hash (includes prefix)
+      // So we can recover directly from it
+      const recoveredAddress = ethers.utils.recoverAddress(
+        contractHash,
+        { r: sig.r, s: sig.s, v: sig.v }
+      );
+
+      expect(recoveredAddress).to.equal(wallet);
+      
+      // Also verify that the hash matches what ethers computes
+      const network = await ethers.provider.getNetwork();
+      const domain = {
+        name: "UnifiedIDRegistry",
+        version: "1",
+        chainId: network.chainId,
+        verifyingContract: registry.address
+      };
+      
+      const types = {
+        UnifiedIdRegistration: [
+          { name: "wallet", type: "address" },
+          { name: "unifiedId", type: "string" },
+          { name: "nonce", type: "uint256" }
+        ]
+      };
+      
+      const value = { wallet, unifiedId, nonce };
+      
+      // Compute hash using ethers (for verification)
+      const ethersHash = ethers.utils._TypedDataEncoder.hash(domain, types, value);
+      expect(contractHash).to.equal(ethersHash);
+    });
+
+    it("Should produce hash that can be verified with ECDSA.recover", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+
+      const wallet = user1.address;
+      const unifiedId = "testuser123";
+      const nonce = 0;
+
+      // Get hash from contract
+      const contractHash = await registry.getRegistrationHash(wallet, unifiedId, nonce);
+
+      // Sign the hash directly (not EIP-712 format)
+      const messageHash = ethers.utils.arrayify(contractHash);
+      const signature = await user1.signMessage(messageHash);
+
+      // Recover address
+      const recoveredAddress = ethers.utils.verifyMessage(messageHash, signature);
+
+      expect(recoveredAddress).to.equal(wallet);
+    });
+
+    it("Should produce different hashes for different contract addresses", async function () {
+      const { registry, user1 } = await loadFixture(deployFixture);
+      
+      // Deploy a second instance
+      const [owner, initialRegistrar] = await ethers.getSigners();
+      const UnifiedIDRegistry = await ethers.getContractFactory("UnifiedIDRegistry");
+      const registry2 = await UnifiedIDRegistry.deploy(initialRegistrar.address);
+      await registry2.deployed();
+
+      const wallet = user1.address;
+      const unifiedId = "testuser123";
+      const nonce = 0;
+
+      const hash1 = await registry.getRegistrationHash(wallet, unifiedId, nonce);
+      const hash2 = await registry2.getRegistrationHash(wallet, unifiedId, nonce);
+
+      // Hashes should be different because domain separator includes contract address
+      expect(hash1).to.not.equal(hash2);
+    });
+  });
+
   // ============ SECTION 2: REGISTRAR MANAGEMENT TESTS ============
   describe("Registrar Management - Adding Registrars", function () {
     it("Should allow owner to add registrar", async function () {
