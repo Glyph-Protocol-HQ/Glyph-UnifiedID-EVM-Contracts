@@ -95,6 +95,16 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard, EIP712 {
         uint256 timestamp
     );
 
+    /**
+     * @dev Emitted when a wallet's nonce is consumed during successful registration
+     * @param wallet The wallet address whose nonce was consumed (indexed)
+     * @param nonce The nonce value that was consumed
+     */
+    event NonceConsumed(
+        address indexed wallet,
+        uint256 nonce
+    );
+
     // ============ Custom Errors ============
 
     /// @dev Thrown when a function is called by an address that is not an authorized registrar
@@ -129,6 +139,12 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard, EIP712 {
 
     /// @dev Thrown when attempting to remove a registrar that does not currently exist
     error RegistrarDoesNotExist();
+
+    /// @dev Thrown when signature verification fails - recovered signer doesn't match expected wallet
+    error InvalidSignature();
+
+    /// @dev Thrown when signature deadline has passed (reserved for future use)
+    error SignatureExpired();
 
     // ============ Constants ============
 

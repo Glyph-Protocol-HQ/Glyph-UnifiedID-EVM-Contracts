@@ -178,6 +178,67 @@ describe("UnifiedIDRegistry", function () {
     });
   });
 
+  // ============ SECTION 1.7: SIGNATURE VERIFICATION ERRORS AND EVENTS TESTS ============
+  describe("Signature Verification Errors and Events", function () {
+    it("Should have correct InvalidSignature error selector", async function () {
+      const UnifiedIDRegistry = await ethers.getContractFactory("UnifiedIDRegistry");
+      
+      // Get error selector from contract interface using getSighash
+      const errorFragment = UnifiedIDRegistry.interface.getError("InvalidSignature");
+      const errorSelector = UnifiedIDRegistry.interface.getSighash(errorFragment);
+      
+      // Compute expected selector: keccak256("InvalidSignature()") first 4 bytes
+      const expectedSelector = ethers.utils.id("InvalidSignature()").slice(0, 10); // 0x + 8 hex chars
+      
+      expect(errorSelector).to.equal(expectedSelector);
+      expect(errorSelector).to.not.equal("0x00000000");
+    });
+
+    it("Should have correct SignatureExpired error selector", async function () {
+      const UnifiedIDRegistry = await ethers.getContractFactory("UnifiedIDRegistry");
+      
+      // Get error selector from contract interface using getSighash
+      const errorFragment = UnifiedIDRegistry.interface.getError("SignatureExpired");
+      const errorSelector = UnifiedIDRegistry.interface.getSighash(errorFragment);
+      
+      // Compute expected selector: keccak256("SignatureExpired()") first 4 bytes
+      const expectedSelector = ethers.utils.id("SignatureExpired()").slice(0, 10); // 0x + 8 hex chars
+      
+      expect(errorSelector).to.equal(expectedSelector);
+      expect(errorSelector).to.not.equal("0x00000000");
+    });
+
+    it("Should have correct NonceConsumed event signature", async function () {
+      const UnifiedIDRegistry = await ethers.getContractFactory("UnifiedIDRegistry");
+      
+      // Get event from contract interface using getEventTopic
+      const eventFragment = UnifiedIDRegistry.interface.getEvent("NonceConsumed");
+      const eventTopic = UnifiedIDRegistry.interface.getEventTopic(eventFragment);
+      
+      // Compute expected topic hash: keccak256("NonceConsumed(address,uint256)")
+      const expectedTopic = ethers.utils.id("NonceConsumed(address,uint256)");
+      
+      expect(eventTopic).to.equal(expectedTopic);
+      expect(eventTopic).to.not.equal(ethers.constants.HashZero);
+    });
+
+    it("Should have NonceConsumed event with correct indexed parameters", async function () {
+      const UnifiedIDRegistry = await ethers.getContractFactory("UnifiedIDRegistry");
+      
+      // Get event from contract interface
+      const eventFragment = UnifiedIDRegistry.interface.getEvent("NonceConsumed");
+      
+      // Verify event has correct parameters
+      expect(eventFragment.inputs.length).to.equal(2);
+      expect(eventFragment.inputs[0].name).to.equal("wallet");
+      expect(eventFragment.inputs[0].type).to.equal("address");
+      expect(eventFragment.inputs[0].indexed).to.be.true;
+      expect(eventFragment.inputs[1].name).to.equal("nonce");
+      expect(eventFragment.inputs[1].type).to.equal("uint256");
+      expect(eventFragment.inputs[1].indexed).to.be.false;
+    });
+  });
+
   // ============ SECTION 2: REGISTRAR MANAGEMENT TESTS ============
   describe("Registrar Management - Adding Registrars", function () {
     it("Should allow owner to add registrar", async function () {
