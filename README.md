@@ -13,13 +13,26 @@ UnifiedIDRegistry is a smart contract that provides a secure and efficient way t
 - **Registrar Management**: Contract owner can add or remove registrars dynamically
 - **Bidirectional Lookup**: Query UnifiedID by wallet address or wallet by UnifiedID
 - **Format Validation**: Enforces strict format rules for UnifiedIDs (lowercase alphanumeric, 4-16 characters)
+- **EIP-712 Support**: Built-in support for EIP-712 typed structured data hashing and signing
 - **Reentrancy Protection**: Uses OpenZeppelin's ReentrancyGuard for security
-- **Multi-Network Support**: Deployable to Polygon, Ethereum Sepolia, Base Sepolia, and more
+- **Multi-Network Support**: Deployable to Polygon, Ethereum Sepolia, Base Sepolia, BNB Chain (coming soon), and more
+
+### Detailed Documentation
+
+https://docs.glyph.network/
+
+
 
 ## Deployed Addresses
 
+### Base Mainnet
+- **UnifiedIDRegistry**: `0x3bcdaa321cd9eeffaad4bd501a69b53fbbbb5655`
+
 ### Base Sepolia Testnet
 - **UnifiedIDRegistry**: `0xbDe85ce0fCfB1b7F25e9570015B574529e70E1DB`
+
+### BNB Chain
+- *Coming soon*
 
 ## Prerequisites
 
@@ -313,6 +326,12 @@ async function example() {
 - **Parameters**: 
   - `wallet`: The wallet address to query
 - **Returns**: The UnifiedID string associated with the wallet, or empty string if wallet has no ID
+
+#### `domainSeparator() → bytes32`
+- **Access**: Public view
+- **Description**: Returns the EIP-712 domain separator for use in off-chain signature verification
+- **Returns**: The domain separator bytes32 value
+- **Use Case**: Enables off-chain applications to verify typed structured data signatures according to EIP-712 standard
 
 ### Public State Variables
 

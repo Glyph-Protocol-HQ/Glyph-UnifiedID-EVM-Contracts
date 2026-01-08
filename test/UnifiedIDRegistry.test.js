@@ -77,6 +77,56 @@ describe("UnifiedIDRegistry", function () {
     });
   });
 
+  // ============ SECTION 1.5: EIP-712 TESTS ============
+  describe("EIP-712 Support", function () {
+    it("Should deploy contract successfully with EIP712 initialized", async function () {
+      const { registry } = await loadFixture(deployFixture);
+
+      // Contract should deploy without errors
+      expect(registry.address).to.be.properAddress;
+      
+      // Verify EIP712 is initialized by checking domain separator is accessible
+      const domainSeparator = await registry.domainSeparator();
+      expect(domainSeparator).to.not.equal(ethers.constants.HashZero);
+    });
+
+    it("Should return non-zero domain separator", async function () {
+      const { registry } = await loadFixture(deployFixture);
+
+      const domainSeparator = await registry.domainSeparator();
+      
+      // Domain separator should be a non-zero bytes32 value
+      expect(domainSeparator).to.not.equal(ethers.constants.HashZero);
+      expect(domainSeparator.length).to.equal(66); // 0x + 64 hex characters
+    });
+
+    it("Should maintain consistent domain separator across calls", async function () {
+      const { registry } = await loadFixture(deployFixture);
+
+      const domainSeparator1 = await registry.domainSeparator();
+      const domainSeparator2 = await registry.domainSeparator();
+      
+      // Domain separator should be consistent
+      expect(domainSeparator1).to.equal(domainSeparator2);
+    });
+
+    it("Should allow createUnifiedID to work after EIP712 integration", async function () {
+      const { registry, initialRegistrar, user1 } = await loadFixture(deployFixture);
+
+      // Verify EIP712 is initialized
+      const domainSeparator = await registry.domainSeparator();
+      expect(domainSeparator).to.not.equal(ethers.constants.HashZero);
+
+      // Verify existing functionality still works
+      const unifiedId = "testuser123";
+      await registry.connect(initialRegistrar).createUnifiedID(unifiedId, user1.address);
+
+      expect(await registry.unifiedIdExists(unifiedId)).to.be.true;
+      expect(await registry.getPrimaryWallet(unifiedId)).to.equal(user1.address);
+      expect(await registry.totalIDs()).to.equal(1);
+    });
+  });
+
   // ============ SECTION 2: REGISTRAR MANAGEMENT TESTS ============
   describe("Registrar Management - Adding Registrars", function () {
     it("Should allow owner to add registrar", async function () {

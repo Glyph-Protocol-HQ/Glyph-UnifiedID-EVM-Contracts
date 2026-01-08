@@ -3,13 +3,20 @@ pragma solidity ^0.8.19;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 
 /**
  * @title UnifiedIDRegistry
  * @dev Registry contract for managing UnifiedID mappings to wallet addresses
  * @notice This contract allows a relayer to create UnifiedIDs and map them to primary wallets
+ * @notice Supports EIP-712 for typed structured data hashing and signing
  */
-contract UnifiedIDRegistry is Ownable, ReentrancyGuard {
+contract UnifiedIDRegistry is Ownable, ReentrancyGuard, EIP712 {
+    // ============ Libraries ============
+    
+    using ECDSA for bytes32;
+
     // ============ State Variables ============
 
     /// @dev Mapping to determine whether an address is an active registrar authorized to create UnifiedIDs
@@ -146,7 +153,7 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard {
      * @dev Constructor to initialize the contract with an initial registrar
      * @param _initialRegistrar The address of the first registrar authorized to create UnifiedIDs
      */
-    constructor(address _initialRegistrar) Ownable(msg.sender) {
+    constructor(address _initialRegistrar) Ownable(msg.sender) EIP712("UnifiedIDRegistry", "1") {
         if (_initialRegistrar == address(0)) {
             revert InvalidRegistrarAddress();
         }
@@ -336,6 +343,15 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard {
         address wallet
     ) external view returns (string memory) {
         return walletToUnifiedId[wallet];
+    }
+
+    /**
+     * @dev Returns the EIP-712 domain separator
+     * @return The domain separator bytes32 value
+     * @notice This function exposes the domain separator for use in off-chain signature verification
+     */
+    function domainSeparator() external view returns (bytes32) {
+        return _domainSeparatorV4();
     }
 
     // ============ Internal Functions ============
