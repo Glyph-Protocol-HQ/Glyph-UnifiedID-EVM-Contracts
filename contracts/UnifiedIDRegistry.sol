@@ -200,42 +200,7 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard, EIP712 {
         string calldata unifiedId,
         address primaryWallet
     ) external onlyRegistrar nonReentrant {
-        // Validate UnifiedID format
-        _validateUnifiedIdFormat(unifiedId);
-
-        // Check if UnifiedID already exists
-        if (_unifiedIdExists[unifiedId]) {
-            revert UnifiedIdAlreadyTaken();
-        }
-
-        // Validate primary wallet address
-        if (primaryWallet == address(0)) {
-            revert InvalidPrimaryWallet();
-        }
-
-        // Check if wallet already has a UnifiedID
-        bytes memory existingId = bytes(walletToUnifiedId[primaryWallet]);
-        if (existingId.length > 0) {
-            revert WalletAlreadyHasId();
-        }
-
-        // Create the UnifiedID entry
-        uint256 timestamp = block.timestamp;
-        registry[unifiedId] = UnifiedID({
-            primaryWallet: primaryWallet,
-            createdAt: timestamp
-        });
-
-        // Update mappings
-        walletToUnifiedId[primaryWallet] = unifiedId;
-        _unifiedIdExists[unifiedId] = true;
-
-        unchecked {
-            totalIDs++;
-        }
-
-        // Emit event
-        emit UnifiedIDCreated(unifiedId, primaryWallet, timestamp);
+        _createUnifiedID(unifiedId, primaryWallet);
     }
 
     // ============ Registrar Management Functions ============
@@ -411,6 +376,53 @@ contract UnifiedIDRegistry is Ownable, ReentrancyGuard, EIP712 {
     }
 
     // ============ Internal Functions ============
+
+    /**
+     * @dev Internal function to create a UnifiedID - shared by both registration paths
+     * @param unifiedId The UnifiedID string to create
+     * @param primaryWallet The primary wallet address to associate
+     */
+    function _createUnifiedID(
+        string calldata unifiedId,
+        address primaryWallet
+    ) internal {
+        // Validate UnifiedID format
+        _validateUnifiedIdFormat(unifiedId);
+
+        // Check if UnifiedID already exists
+        if (_unifiedIdExists[unifiedId]) {
+            revert UnifiedIdAlreadyTaken();
+        }
+
+        // Validate primary wallet address
+        if (primaryWallet == address(0)) {
+            revert InvalidPrimaryWallet();
+        }
+
+        // Check if wallet already has a UnifiedID
+        bytes memory existingId = bytes(walletToUnifiedId[primaryWallet]);
+        if (existingId.length > 0) {
+            revert WalletAlreadyHasId();
+        }
+
+        // Create the UnifiedID entry
+        uint256 timestamp = block.timestamp;
+        registry[unifiedId] = UnifiedID({
+            primaryWallet: primaryWallet,
+            createdAt: timestamp
+        });
+
+        // Update mappings
+        walletToUnifiedId[primaryWallet] = unifiedId;
+        _unifiedIdExists[unifiedId] = true;
+
+        unchecked {
+            totalIDs++;
+        }
+
+        // Emit event
+        emit UnifiedIDCreated(unifiedId, primaryWallet, timestamp);
+    }
 
     /**
      * @dev Builds the EIP-712 typed data hash for UnifiedID registration
